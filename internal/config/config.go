@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -35,7 +36,7 @@ const defaultConfigTemplate = `# memory — spaced-repetition CLI config
 
 # Directories to scan for markdown notes.
 # Add one or more absolute paths to your vault(s). Required.
-# notes_dirs = ["/home/you/notes", "/home/you/obsidian-vault"]
+# notes_dirs = ["~/notes", "~/obsidian-vault"]
 notes_dirs = []
 
 # Tags that mark a note as a study card (case-sensitive). Default: ["#study"]
@@ -75,7 +76,21 @@ func Load(path string) (*Config, error) {
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	home, _ := os.UserHomeDir()
+	for i, dir := range cfg.NotesDirs {
+		cfg.NotesDirs[i] = expandTilde(dir, home)
+	}
 	return cfg, nil
+}
+
+func expandTilde(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 func Validate(c *Config) error {

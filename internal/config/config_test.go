@@ -59,6 +59,26 @@ func TestValidateRejectsEmptyNotesDirs(t *testing.T) {
 	}
 }
 
+func TestTildeExpansion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	home, _ := os.UserHomeDir()
+	content := `notes_dirs = ["~/vault"]` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := filepath.Join(home, "vault")
+	if len(cfg.NotesDirs) != 1 || cfg.NotesDirs[0] != want {
+		t.Errorf("NotesDirs[0] = %q, want %q", cfg.NotesDirs[0], want)
+	}
+}
+
 func TestValidateAcceptsValidConfig(t *testing.T) {
 	cfg := defaults()
 	cfg.NotesDirs = []string{"/tmp"}
