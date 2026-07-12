@@ -52,7 +52,8 @@ type Model struct {
 	dailyLimit int
 	aiEnabled  bool
 
-	viewport viewport.Model
+	viewport viewport.Model // note content (reveal) and AI questions
+	evalVP   viewport.Model // AI evaluation result (grading)
 	textarea textarea.Model
 
 	// pre-session stats
@@ -80,6 +81,7 @@ func NewModel(database *sql.DB, cfg *config.Config, cards []db.Card, vaultTotal,
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter"), key.WithHelp("alt+enter", "new line"))
 
 	vp := viewport.New(80, 20)
+	evp := viewport.New(80, 20)
 
 	aiEnabled := cfg.AI.Binary != ""
 
@@ -91,6 +93,7 @@ func NewModel(database *sql.DB, cfg *config.Config, cards []db.Card, vaultTotal,
 		dailyLimit: cfg.DailyLimit,
 		aiEnabled:  aiEnabled,
 		viewport:   vp,
+		evalVP:     evp,
 		textarea:   ta,
 		vaultTotal: vaultTotal,
 		streak:     streak,
@@ -114,8 +117,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.viewport.Width = msg.Width
+		m.evalVP.Width = msg.Width
 		m.textarea.SetWidth(msg.Width)
 		m.viewport.Height = m.viewportHeight()
+		m.evalVP.Height = m.viewportHeightForGrading()
 		if m.state == stateAIQuestions {
 			m.viewport.Height = m.aiQuestionsViewportHeight()
 			m.textarea.SetHeight(m.aiAnswerHeight())
@@ -148,9 +153,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiEval = &msg
 		if msg.err != nil {
 			m.aiEnabled = false
-		} else if m.state == stateGrading {
-			// user already pressed Enter on reveal — populate viewport now
-			m.setGradingViewport()
+		} else {
+			content := boldStyle.Render("Suggested: ") + msg.grade + "\n\n" + msg.rationale
+			m.evalVP.Height = m.viewportHeightForGrading()
+			m.evalVP.SetContent(content)
+			m.evalVP.GotoTop()
 		}
 		return m, nil
 
@@ -297,20 +304,11 @@ func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.Enter):
 		m.state = stateGrading
-		if m.aiEval != nil {
-			m.setGradingViewport()
-		}
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
-}
-
-func (m *Model) setGradingViewport() {
-	content := boldStyle.Render("Suggested: ") + m.aiEval.grade + "\n\n" + m.aiEval.rationale
-	m.viewport.Height = m.viewportHeightForGrading()
-	m.viewport.SetContent(content)
-	m.viewport.GotoTop()
 }
 
 func fetchAIEval(cfg config.AIConfig, content, transcript string) tea.Cmd {
@@ -332,8 +330,11 @@ func (m Model) updateGrading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.applyGrade(grade)
 		case "o", "O":
 			m.aiEval = nil // show manual grading
+			return m, nil
 		}
-		return m, nil
+		var cmd tea.Cmd
+		m.evalVP, cmd = m.evalVP.Update(msg)
+		return m, cmd
 	}
 
 	switch {
@@ -495,7 +496,7 @@ func (m Model) viewGrading() string {
 		if m.aiEval != nil && m.aiEval.err == nil {
 			var b strings.Builder
 			b.WriteString(boldStyle.Render("AI Evaluation") + "\n")
-			b.WriteString(m.viewport.View() + "\n")
+			b.WriteString(m.evalVP.View() + "\n")
 			b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [↑/↓] Scroll  [q] Quit"))
 			return b.String()
 		}
