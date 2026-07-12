@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 
 	"github.com/clobrano/memory/internal/ai"
 	"github.com/clobrano/memory/internal/config"
@@ -139,9 +140,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.state = stateReveal
 		} else {
+			w := m.width - 2
+			if w < 20 {
+				w = 20
+			}
 			m.aiQuestions = msg.questions
 			m.viewport.Height = m.aiQuestionsViewportHeight()
-			m.viewport.SetContent(msg.questions)
+			m.viewport.SetContent(wordwrap.String(msg.questions, w))
 			m.viewport.GotoTop()
 			m.textarea.SetHeight(m.aiAnswerHeight())
 			m.textarea.Focus()
@@ -154,7 +159,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.aiEnabled = false
 		} else {
-			content := boldStyle.Render("Suggested: ") + msg.grade + "\n\n" + msg.rationale
+			w := m.width - 2
+			if w < 20 {
+				w = 20
+			}
+			content := boldStyle.Render("Suggested: "+msg.grade) + "\n\n" +
+				wordwrap.String(msg.rationale, w)
 			m.evalVP.Height = m.viewportHeightForGrading()
 			m.evalVP.SetContent(content)
 			m.evalVP.GotoTop()
