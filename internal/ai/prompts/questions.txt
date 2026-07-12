@@ -1,0 +1,6 @@
+You are a spaced-repetition tutor. Based on the following note, generate 2-3 concise questions that test recall of the key concepts.
+
+NOTE:
+{{NOTE_CONTENT}}
+
+Questions:

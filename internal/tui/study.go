@@ -1,0 +1,471 @@
+package tui
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/clobrano/memory/internal/ai"
+	"github.com/clobrano/memory/internal/config"
+	"github.com/clobrano/memory/internal/db"
+	"github.com/clobrano/memory/internal/fsrs"
+)
+
+var (
+	titleStyle   = lipgloss.NewStyle().Bold(true).Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	hintStyle    = lipgloss.NewStyle().Faint(true)
+	warningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	boldStyle    = lipgloss.NewStyle().Bold(true)
+	aiPanelStyle = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1).BorderForeground(lipgloss.Color("12"))
+)
+
+type gradeResult struct {
+	card  db.Card
+	grade fsrs.Grade
+}
+
+type aiEvalResult struct {
+	grade     string
+	rationale string
+	err       error
+}
+
+type Model struct {
+	db         *sql.DB
+	cfg        *config.Config
+	cards      []db.Card
+	index      int
+	state      sessionState
+	dailyLimit int
+	aiEnabled  bool
+
+	viewport viewport.Model
+	textarea textarea.Model
+
+	// pre-session stats
+	vaultTotal int
+	streak     int
+
+	// grading
+	reviewed    []gradeResult
+	aiQuestions string
+	aiEval      *aiEvalResult
+	aiLoading   bool
+
+	// quit confirmation
+	confirmQuit bool
+
+	err error
+	width  int
+	height int
+}
+
+func NewModel(database *sql.DB, cfg *config.Config, cards []db.Card, vaultTotal, streak int) Model {
+	ta := textarea.New()
+	ta.Placeholder = "Type your answer here..."
+	ta.CharLimit = 2000
+
+	vp := viewport.New(80, 20)
+
+	aiEnabled := cfg.AI.Binary != ""
+
+	return Model{
+		db:         database,
+		cfg:        cfg,
+		cards:      cards,
+		state:      statePreSession,
+		dailyLimit: cfg.DailyLimit,
+		aiEnabled:  aiEnabled,
+		viewport:   vp,
+		textarea:   ta,
+		vaultTotal: vaultTotal,
+		streak:     streak,
+	}
+}
+
+func (m Model) Init() tea.Cmd {
+	return nil
+}
+
+func (m Model) currentCard() *db.Card {
+	if m.index < len(m.cards) {
+		return &m.cards[m.index]
+	}
+	return nil
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.viewport.Width = msg.Width
+		m.viewport.Height = msg.Height - 6
+
+	case aiEvalResult:
+		m.aiLoading = false
+		m.aiEval = &msg
+		if msg.err != nil {
+			m.aiEnabled = false
+		}
+		return m, nil
+
+	case tea.KeyMsg:
+		if m.confirmQuit {
+			switch msg.String() {
+			case "y", "Y":
+				return m, tea.Quit
+			default:
+				m.confirmQuit = false
+				return m, nil
+			}
+		}
+
+		switch m.state {
+		case statePreSession:
+			return m.updatePreSession(msg)
+		case stateRecall:
+			return m.updateRecall(msg)
+		case stateReveal:
+			return m.updateReveal(msg)
+		case stateGrading:
+			return m.updateGrading(msg)
+		case stateSessionSummary:
+			return m.updateSummary(msg)
+		}
+	}
+
+	if m.state == stateReveal && m.aiEnabled && m.aiQuestions != "" {
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
+	}
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updatePreSession(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	due := len(m.cards)
+	switch {
+	case key.Matches(msg, keys.Quit):
+		return m, tea.Quit
+	case key.Matches(msg, keys.Cap) && due > m.dailyLimit:
+		m.cards = m.cards[:m.dailyLimit]
+		return m.startSession()
+	case key.Matches(msg, keys.All) && due > m.dailyLimit:
+		return m.startSession()
+	case key.Matches(msg, keys.Enter):
+		if due > m.dailyLimit {
+			m.cards = m.cards[:m.dailyLimit]
+		}
+		return m.startSession()
+	}
+	return m, nil
+}
+
+func (m Model) startSession() (tea.Model, tea.Cmd) {
+	if len(m.cards) == 0 {
+		m.state = stateSessionSummary
+		return m, nil
+	}
+	m.state = stateRecall
+	return m, nil
+}
+
+func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Quit):
+		m.confirmQuit = true
+		return m, nil
+	case key.Matches(msg, keys.Enter):
+		card := m.currentCard()
+		if card == nil {
+			m.state = stateSessionSummary
+			return m, nil
+		}
+		content, _ := readNoteContent(card.Path)
+		m.viewport.SetContent(renderMarkdown(content))
+		m.state = stateReveal
+		m.aiQuestions = ""
+		m.aiEval = nil
+		m.textarea.Reset()
+
+		if m.aiEnabled {
+			m.aiLoading = true
+			return m, m.fetchAIQuestions(content)
+		}
+	}
+	return m, nil
+}
+
+func (m Model) fetchAIQuestions(content string) tea.Cmd {
+	return func() tea.Msg {
+		q, err := ai.AskQuestions(m.cfg.AI, content)
+		if err != nil {
+			m.aiEnabled = false
+			return nil
+		}
+		m.aiQuestions = q
+		return nil
+	}
+}
+
+func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Quit):
+		m.confirmQuit = true
+		return m, nil
+	case key.Matches(msg, keys.Enter):
+		if m.aiEnabled && m.aiQuestions != "" {
+			// collect answer and send to AI evaluator
+			answer := m.textarea.Value()
+			card := m.currentCard()
+			content, _ := readNoteContent(card.Path)
+			transcript := m.aiQuestions + "\n\nAnswer:\n" + answer
+			m.aiLoading = true
+			return m, m.fetchAIEval(content, transcript)
+		}
+		m.state = stateGrading
+	}
+	var cmd tea.Cmd
+	if m.aiEnabled && m.aiQuestions != "" {
+		m.textarea, cmd = m.textarea.Update(msg)
+	} else {
+		m.viewport, cmd = m.viewport.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m Model) fetchAIEval(content, transcript string) tea.Cmd {
+	return func() tea.Msg {
+		grade, rationale, err := ai.Evaluate(m.cfg.AI, content, transcript)
+		return aiEvalResult{grade: grade, rationale: rationale, err: err}
+	}
+}
+
+func (m Model) updateGrading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// AI eval panel: accept or override
+	if m.aiEval != nil {
+		switch msg.String() {
+		case "q", "esc":
+			m.confirmQuit = true
+			return m, nil
+		case "a", "A":
+			grade := aiGradeToFSRS(m.aiEval.grade)
+			return m.applyGrade(grade)
+		case "o", "O":
+			m.aiEval = nil // show manual grading
+		}
+		return m, nil
+	}
+
+	switch {
+	case key.Matches(msg, keys.Quit):
+		m.confirmQuit = true
+		return m, nil
+	case key.Matches(msg, keys.One):
+		return m.applyGrade(fsrs.GradeAllCorrect)
+	case key.Matches(msg, keys.Two):
+		return m.applyGrade(fsrs.GradePartiallyCorrect)
+	case key.Matches(msg, keys.Three):
+		return m.applyGrade(fsrs.GradeNeedsReview)
+	}
+	return m, nil
+}
+
+func (m Model) applyGrade(grade fsrs.Grade) (tea.Model, tea.Cmd) {
+	card := m.currentCard()
+	if card == nil {
+		m.state = stateSessionSummary
+		return m, nil
+	}
+	updated, err := fsrs.Schedule(*card, grade, time.Now())
+	if err == nil {
+		_ = db.UpdateCardSchedule(m.db, updated)
+		_ = db.InsertReview(m.db, db.Review{
+			CardID:     updated.ID,
+			ReviewedAt: time.Now(),
+			Grade:      grade.String(),
+			Rating:     grade.Rating(),
+		})
+	}
+	m.reviewed = append(m.reviewed, gradeResult{card: updated, grade: grade})
+	m.index++
+	if m.index >= len(m.cards) {
+		m.state = stateSessionSummary
+	} else {
+		m.state = stateRecall
+		m.aiQuestions = ""
+		m.aiEval = nil
+	}
+	return m, nil
+}
+
+func (m Model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Quit), key.Matches(msg, keys.Enter):
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) View() string {
+	if m.confirmQuit {
+		return "\nQuit session? [y/N]: "
+	}
+	switch m.state {
+	case statePreSession:
+		return m.viewPreSession()
+	case stateRecall:
+		return m.viewRecall()
+	case stateReveal:
+		return m.viewReveal()
+	case stateGrading:
+		return m.viewGrading()
+	case stateSessionSummary:
+		return m.viewSummary()
+	}
+	return ""
+}
+
+func (m Model) viewPreSession() string {
+	due := len(m.cards)
+	var b strings.Builder
+	b.WriteString(boldStyle.Render("Memory — Study Session") + "\n\n")
+	fmt.Fprintf(&b, "  Due today:    %d\n", due)
+	fmt.Fprintf(&b, "  Vault total:  %d\n", m.vaultTotal)
+	fmt.Fprintf(&b, "  Streak:       %d days\n", m.streak)
+	fmt.Fprintf(&b, "  Daily limit:  %d\n\n", m.dailyLimit)
+	if due == 0 {
+		b.WriteString("  Nothing due today! Great work.\n\n")
+		b.WriteString(hintStyle.Render("[q] Quit"))
+		return b.String()
+	}
+	if due > m.dailyLimit {
+		b.WriteString(warningStyle.Render(fmt.Sprintf("  Warning: %d cards due (limit: %d)\n", due, m.dailyLimit)))
+		b.WriteString(hintStyle.Render("  [Enter] Cap session  [a] Review all  [q] Quit\n"))
+	} else {
+		b.WriteString(hintStyle.Render("  [Enter] Start  [q] Quit\n"))
+	}
+	if m.aiEnabled {
+		b.WriteString("\n  " + boldStyle.Render("[AI mode: on]"))
+	}
+	return b.String()
+}
+
+func (m Model) viewRecall() string {
+	card := m.currentCard()
+	if card == nil {
+		return "No card."
+	}
+	progress := fmt.Sprintf("[%d/%d]", m.index+1, len(m.cards))
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", hintStyle.Render(progress))
+	b.WriteString(titleStyle.Render(card.Title) + "\n\n")
+	b.WriteString(hintStyle.Render("Try to recall the content, then press ENTER"))
+	return b.String()
+}
+
+func (m Model) viewReveal() string {
+	card := m.currentCard()
+	if card == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
+	b.WriteString(m.viewport.View() + "\n")
+
+	if m.aiEnabled {
+		if m.aiLoading {
+			b.WriteString(hintStyle.Render("  AI is generating questions...\n"))
+		} else if m.aiQuestions != "" {
+			b.WriteString(aiPanelStyle.Render(m.aiQuestions) + "\n")
+			b.WriteString(m.textarea.View() + "\n")
+			b.WriteString(hintStyle.Render("[Enter] Submit answer"))
+			return b.String()
+		}
+	}
+	b.WriteString(hintStyle.Render("[Enter] Grade  [↑/↓] Scroll  [q] Quit"))
+	return b.String()
+}
+
+func (m Model) viewGrading() string {
+	card := m.currentCard()
+	if card == nil {
+		return ""
+	}
+
+	// AI suggested grade
+	if m.aiEval != nil {
+		var b strings.Builder
+		b.WriteString(boldStyle.Render("AI Evaluation") + "\n\n")
+		b.WriteString(aiPanelStyle.Render(
+			boldStyle.Render("Suggested: ")+m.aiEval.grade+"\n\n"+m.aiEval.rationale,
+		) + "\n\n")
+		b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [q] Quit"))
+		return b.String()
+	}
+
+	var b strings.Builder
+	b.WriteString(boldStyle.Render("How did you do?") + "\n\n")
+	b.WriteString("  [1] All correct\n")
+	b.WriteString("  [2] Partially correct\n")
+	b.WriteString("  [3] Needs review\n\n")
+	b.WriteString(hintStyle.Render("[q] Quit"))
+	return b.String()
+}
+
+func (m Model) viewSummary() string {
+	var b strings.Builder
+	b.WriteString(boldStyle.Render("Session Complete!") + "\n\n")
+	fmt.Fprintf(&b, "  Cards reviewed: %d\n\n", len(m.reviewed))
+
+	counts := map[string]int{}
+	var earliest time.Time
+	for _, r := range m.reviewed {
+		counts[r.grade.String()]++
+		if earliest.IsZero() || (!r.card.NextDue.IsZero() && r.card.NextDue.Before(earliest)) {
+			earliest = r.card.NextDue
+		}
+	}
+
+	if c := counts["All correct"]; c > 0 {
+		fmt.Fprintf(&b, "  All correct:       %d\n", c)
+	}
+	if c := counts["Partially correct"]; c > 0 {
+		fmt.Fprintf(&b, "  Partially correct: %d\n", c)
+	}
+	if c := counts["Needs review"]; c > 0 {
+		fmt.Fprintf(&b, "  Needs review:      %d\n", c)
+	}
+	if !earliest.IsZero() {
+		fmt.Fprintf(&b, "\n  Next review: %s\n", earliest.Format("2006-01-02"))
+	}
+	b.WriteString("\n" + hintStyle.Render("[Enter/q] Exit"))
+	return b.String()
+}
+
+func readNoteContent(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	return string(b), err
+}
+
+func aiGradeToFSRS(grade string) fsrs.Grade {
+	switch strings.ToLower(grade) {
+	case "all correct":
+		return fsrs.GradeAllCorrect
+	case "partially correct":
+		return fsrs.GradePartiallyCorrect
+	default:
+		return fsrs.GradeNeedsReview
+	}
+}

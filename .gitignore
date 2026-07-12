@@ -1,0 +1,18 @@
+# Binary
+memory
+
+# Database
+*.db
+*.sqlite
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Tasks (local planning, not part of the project)
+tasks/
