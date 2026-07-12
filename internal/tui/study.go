@@ -73,13 +73,11 @@ type Model struct {
 	height int
 }
 
-const textareaHeight = 5
-
 func NewModel(database *sql.DB, cfg *config.Config, cards []db.Card, vaultTotal, streak int) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Type your answer here..."
-	ta.CharLimit = 2000
-	ta.SetHeight(textareaHeight)
+	ta.Placeholder = "Type your answer here (Alt-Enter for new line, Enter to submit)..."
+	ta.CharLimit = 4000
+	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter"), key.WithHelp("alt+enter", "new line"))
 
 	vp := viewport.New(80, 20)
 
@@ -118,6 +116,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Width = msg.Width
 		m.textarea.SetWidth(msg.Width)
 		m.viewport.Height = m.viewportHeight()
+		if m.state == stateAIQuestions {
+			m.viewport.Height = m.aiQuestionsViewportHeight()
+			m.textarea.SetHeight(m.aiAnswerHeight())
+		}
 
 	case aiQuestionsMsg:
 		m.aiLoading = false
@@ -133,9 +135,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateReveal
 		} else {
 			m.aiQuestions = msg.questions
-			m.viewport.Height = m.viewportHeightForAIQuestions()
+			m.viewport.Height = m.aiQuestionsViewportHeight()
 			m.viewport.SetContent(msg.questions)
 			m.viewport.GotoTop()
+			m.textarea.SetHeight(m.aiAnswerHeight())
 			m.textarea.Focus()
 		}
 		return m, nil
@@ -516,26 +519,33 @@ func (m Model) viewSummary() string {
 func (m Model) viewportHeight() int { return m.viewportHeightForReveal() }
 
 func (m Model) viewportHeightForReveal() int {
-	// header(1) + hint(1) + padding(2)
-	h := m.height - 4
+	h := m.height - 4 // header(1) + hint(1) + padding(2)
 	if h < 5 {
 		h = 5
 	}
 	return h
 }
 
-func (m Model) viewportHeightForAIQuestions() int {
-	// header(1) + textarea(textareaHeight) + hint(1) + padding(3)
-	h := m.height - textareaHeight - 5
-	if h < 3 {
-		h = 3
+// aiContentHeight is the total lines available to split between questions and answer.
+func (m Model) aiContentHeight() int {
+	chrome := 3 // header(1) + hint(1) + padding(1)
+	h := m.height - chrome
+	if h < 6 {
+		h = 6
 	}
 	return h
 }
 
+func (m Model) aiQuestionsViewportHeight() int {
+	return m.aiContentHeight() / 2
+}
+
+func (m Model) aiAnswerHeight() int {
+	return m.aiContentHeight() - m.aiQuestionsViewportHeight()
+}
+
 func (m Model) viewportHeightForGrading() int {
-	// header(1) + hint(1) + padding(2)
-	h := m.height - 4
+	h := m.height - 4 // header(1) + hint(1) + padding(2)
 	if h < 3 {
 		h = 3
 	}
