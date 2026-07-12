@@ -31,19 +31,21 @@ func GetReviewsLast30Days(db *sql.DB) ([]Review, error) {
 
 func GetReviewsPerDay(db *sql.DB, days int) (map[string]int, error) {
 	since := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
-	rows, err := db.Query(`SELECT date(reviewed_at), COUNT(*) FROM review_history WHERE reviewed_at >= ? GROUP BY date(reviewed_at)`, since)
+	rows, err := db.Query(`SELECT date(reviewed_at), COUNT(*) FROM review_history WHERE reviewed_at IS NOT NULL AND reviewed_at >= ? GROUP BY date(reviewed_at)`, since)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := make(map[string]int)
 	for rows.Next() {
-		var day string
+		var day sql.NullString
 		var count int
 		if err := rows.Scan(&day, &count); err != nil {
 			return nil, err
 		}
-		result[day] = count
+		if day.Valid {
+			result[day.String] = count
+		}
 	}
 	return result, rows.Err()
 }
