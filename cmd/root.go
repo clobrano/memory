@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/clobrano/memory/internal/ai"
 	"github.com/clobrano/memory/internal/config"
 	"github.com/clobrano/memory/internal/db"
 	"github.com/spf13/cobra"
@@ -28,7 +29,17 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("config: %w", err)
 		}
 		if err := config.Validate(Cfg); err != nil {
-			return fmt.Errorf("config invalid: %w", err)
+			return fmt.Errorf("%w\n  config: %s", err, cfgFile)
+		}
+		// Write default prompt files if they don't exist; backfill config paths.
+		qPath, ePath, err := ai.EnsureDefaultPrompts(filepath.Dir(cfgFile))
+		if err == nil {
+			if Cfg.AI.QuestionPromptFile == "" {
+				Cfg.AI.QuestionPromptFile = qPath
+			}
+			if Cfg.AI.EvaluatePromptFile == "" {
+				Cfg.AI.EvaluatePromptFile = ePath
+			}
 		}
 		DB, err = db.Open(dbFile)
 		if err != nil {

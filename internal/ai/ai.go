@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/clobrano/memory/internal/config"
@@ -16,6 +17,31 @@ var defaultQuestionsPrompt string
 
 //go:embed prompts/evaluate.txt
 var defaultEvaluatePrompt string
+
+// EnsureDefaultPrompts writes the embedded prompt templates to <dir>/prompts/
+// if they don't already exist, and returns their paths.
+func EnsureDefaultPrompts(dir string) (questionsPath, evaluatePath string, err error) {
+	promptsDir := filepath.Join(dir, "prompts")
+	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("create prompts dir: %w", err)
+	}
+	questionsPath = filepath.Join(promptsDir, "questions.txt")
+	evaluatePath = filepath.Join(promptsDir, "evaluate.txt")
+	for _, f := range []struct {
+		path    string
+		content string
+	}{
+		{questionsPath, defaultQuestionsPrompt},
+		{evaluatePath, defaultEvaluatePrompt},
+	} {
+		if _, err := os.Stat(f.path); os.IsNotExist(err) {
+			if err := os.WriteFile(f.path, []byte(f.content), 0o644); err != nil {
+				return "", "", fmt.Errorf("write %s: %w", f.path, err)
+			}
+		}
+	}
+	return questionsPath, evaluatePath, nil
+}
 
 func loadPrompt(path, fallback string) string {
 	if path == "" {

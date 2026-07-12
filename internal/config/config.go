@@ -30,6 +30,34 @@ func defaults() *Config {
 	}
 }
 
+const defaultConfigTemplate = `# memory — spaced-repetition CLI config
+# Full reference: https://github.com/clobrano/memory
+
+# Directories to scan for markdown notes.
+# Add one or more absolute paths to your vault(s). Required.
+# notes_dirs = ["/home/you/notes", "/home/you/obsidian-vault"]
+notes_dirs = []
+
+# Tags that mark a note as a study card (case-sensitive). Default: ["#study"]
+study_tags = ["#study"]
+
+# Maximum cards to review in a single session. Default: 20
+daily_limit = 20
+
+[ai]
+# Path or name of an AI CLI binary to enable AI question generation and
+# evaluation. Leave commented out (or empty) to disable AI mode entirely.
+# Examples: "claude", "ollama", "/usr/local/bin/my-ai-tool"
+# binary = "claude"
+
+# Arguments passed to the binary before the prompt is piped to stdin.
+# args = ["--model", "claude-opus-4-5", "-p"]
+
+# Override the default prompt templates (written to the prompts/ dir below).
+# question_prompt_file = ""
+# evaluate_prompt_file = ""
+`
+
 func Load(path string) (*Config, error) {
 	cfg := defaults()
 
@@ -37,14 +65,10 @@ func Load(path string) (*Config, error) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, fmt.Errorf("create config dir: %w", err)
 		}
-		f, err := os.Create(path)
-		if err != nil {
-			return nil, fmt.Errorf("create config file: %w", err)
-		}
-		defer f.Close()
-		if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		if err := os.WriteFile(path, []byte(defaultConfigTemplate), 0o644); err != nil {
 			return nil, fmt.Errorf("write default config: %w", err)
 		}
+		fmt.Fprintf(os.Stderr, "Config created at %s — edit notes_dirs before running.\n", path)
 		return cfg, nil
 	}
 
@@ -56,7 +80,7 @@ func Load(path string) (*Config, error) {
 
 func Validate(c *Config) error {
 	if len(c.NotesDirs) == 0 {
-		return fmt.Errorf("notes_dirs must have at least one entry")
+		return fmt.Errorf("notes_dirs is empty — open your config file and add at least one vault directory")
 	}
 	if c.DailyLimit <= 0 {
 		return fmt.Errorf("daily_limit must be > 0")
