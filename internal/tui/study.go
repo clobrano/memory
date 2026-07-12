@@ -73,10 +73,13 @@ type Model struct {
 	height int
 }
 
+const textareaHeight = 5
+
 func NewModel(database *sql.DB, cfg *config.Config, cards []db.Card, vaultTotal, streak int) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type your answer here..."
 	ta.CharLimit = 2000
+	ta.SetHeight(textareaHeight)
 
 	vp := viewport.New(80, 20)
 
@@ -113,7 +116,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height - 6
+		m.textarea.SetWidth(msg.Width)
+		m.viewport.Height = m.viewportHeight()
 
 	case aiQuestionsMsg:
 		m.aiLoading = false
@@ -123,11 +127,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			card := m.currentCard()
 			if card != nil {
 				content, _ := readNoteContent(card.Path)
+				m.viewport.Height = m.viewportHeightForReveal()
 				m.viewport.SetContent(renderMarkdown(content))
 			}
 			m.state = stateReveal
 		} else {
 			m.aiQuestions = msg.questions
+			m.viewport.Height = m.viewportHeightForAIQuestions()
+			m.viewport.SetContent(msg.questions)
+			m.viewport.GotoTop()
 			m.textarea.Focus()
 		}
 		return m, nil
@@ -137,6 +145,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiEval = &msg
 		if msg.err != nil {
 			m.aiEnabled = false
+		} else {
+			evalContent := boldStyle.Render("Suggested: ") + msg.grade + "\n\n" + msg.rationale
+			m.viewport.Height = m.viewportHeightForGrading()
+			m.viewport.SetContent(evalContent)
+			m.viewport.GotoTop()
 		}
 		return m, nil
 
@@ -227,7 +240,9 @@ func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, fetchAIQuestions(m.cfg.AI, content)
 		}
 		content, _ := readNoteContent(card.Path)
+		m.viewport.Height = m.viewportHeightForReveal()
 		m.viewport.SetContent(renderMarkdown(content))
+		m.viewport.GotoTop()
 		m.state = stateReveal
 	}
 	return m, nil
@@ -252,7 +267,9 @@ func (m Model) updateAIQuestions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		answer := m.textarea.Value()
 		card := m.currentCard()
 		content, _ := readNoteContent(card.Path)
+		m.viewport.Height = m.viewportHeightForReveal()
 		m.viewport.SetContent(renderMarkdown(content))
+		m.viewport.GotoTop()
 		transcript := m.aiQuestions + "\n\nAnswer:\n" + answer
 		m.aiLoading = true
 		m.state = stateReveal
@@ -414,14 +431,14 @@ func (m Model) viewAIQuestions() string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
+	fmt.Fprintf(&b, "%s\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
 	if m.aiLoading {
 		b.WriteString(hintStyle.Render("  AI is generating questions..."))
 		return b.String()
 	}
-	b.WriteString(aiPanelStyle.Render(m.aiQuestions) + "\n\n")
-	b.WriteString(m.textarea.View() + "\n\n")
-	b.WriteString(hintStyle.Render("[Enter] Submit answers and reveal note  [q] Quit"))
+	b.WriteString(m.viewport.View() + "\n")
+	b.WriteString(m.textarea.View() + "\n")
+	b.WriteString(hintStyle.Render("[Enter] Submit answers and reveal note  [↑/↓] Scroll  [q] Quit"))
 	return b.String()
 }
 
@@ -450,11 +467,9 @@ func (m Model) viewGrading() string {
 	// AI suggested grade
 	if m.aiEval != nil {
 		var b strings.Builder
-		b.WriteString(boldStyle.Render("AI Evaluation") + "\n\n")
-		b.WriteString(aiPanelStyle.Render(
-			boldStyle.Render("Suggested: ")+m.aiEval.grade+"\n\n"+m.aiEval.rationale,
-		) + "\n\n")
-		b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [q] Quit"))
+		b.WriteString(boldStyle.Render("AI Evaluation") + "\n")
+		b.WriteString(m.viewport.View() + "\n")
+		b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [↑/↓] Scroll  [q] Quit"))
 		return b.String()
 	}
 
@@ -495,6 +510,36 @@ func (m Model) viewSummary() string {
 	}
 	b.WriteString("\n" + hintStyle.Render("[Enter/q] Exit"))
 	return b.String()
+}
+
+// viewportHeight helpers — each reserves lines for the chrome around the viewport.
+func (m Model) viewportHeight() int { return m.viewportHeightForReveal() }
+
+func (m Model) viewportHeightForReveal() int {
+	// header(1) + hint(1) + padding(2)
+	h := m.height - 4
+	if h < 5 {
+		h = 5
+	}
+	return h
+}
+
+func (m Model) viewportHeightForAIQuestions() int {
+	// header(1) + textarea(textareaHeight) + hint(1) + padding(3)
+	h := m.height - textareaHeight - 5
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+func (m Model) viewportHeightForGrading() int {
+	// header(1) + hint(1) + padding(2)
+	h := m.height - 4
+	if h < 3 {
+		h = 3
+	}
+	return h
 }
 
 func readNoteContent(path string) (string, error) {
