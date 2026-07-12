@@ -10,6 +10,7 @@ type sessionState int
 const (
 	statePreSession    sessionState = iota
 	stateRecall
+	stateAIQuestions // AI mode only: show questions, collect answers
 	stateReveal
 	stateGrading
 	stateSessionSummary

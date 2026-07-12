@@ -32,6 +32,11 @@ type gradeResult struct {
 	grade fsrs.Grade
 }
 
+type aiQuestionsMsg struct {
+	questions string
+	err       error
+}
+
 type aiEvalResult struct {
 	grade     string
 	rationale string
@@ -110,6 +115,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Width = msg.Width
 		m.viewport.Height = msg.Height - 6
 
+	case aiQuestionsMsg:
+		m.aiLoading = false
+		if msg.err != nil || msg.questions == "" {
+			// AI failed — skip to reveal without questions
+			m.aiEnabled = false
+			card := m.currentCard()
+			if card != nil {
+				content, _ := readNoteContent(card.Path)
+				m.viewport.SetContent(renderMarkdown(content))
+			}
+			m.state = stateReveal
+		} else {
+			m.aiQuestions = msg.questions
+			m.textarea.Focus()
+		}
+		return m, nil
+
 	case aiEvalResult:
 		m.aiLoading = false
 		m.aiEval = &msg
@@ -134,6 +156,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePreSession(msg)
 		case stateRecall:
 			return m.updateRecall(msg)
+		case stateAIQuestions:
+			return m.updateAIQuestions(msg)
 		case stateReveal:
 			return m.updateReveal(msg)
 		case stateGrading:
@@ -143,7 +167,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.state == stateReveal && m.aiEnabled && m.aiQuestions != "" {
+	if m.state == stateAIQuestions {
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		return m, cmd
@@ -192,31 +216,51 @@ func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateSessionSummary
 			return m, nil
 		}
-		content, _ := readNoteContent(card.Path)
-		m.viewport.SetContent(renderMarkdown(content))
-		m.state = stateReveal
 		m.aiQuestions = ""
 		m.aiEval = nil
 		m.textarea.Reset()
 
 		if m.aiEnabled {
+			content, _ := readNoteContent(card.Path)
 			m.aiLoading = true
-			return m, m.fetchAIQuestions(content)
+			m.state = stateAIQuestions
+			return m, fetchAIQuestions(m.cfg.AI, content)
 		}
+		content, _ := readNoteContent(card.Path)
+		m.viewport.SetContent(renderMarkdown(content))
+		m.state = stateReveal
 	}
 	return m, nil
 }
 
-func (m Model) fetchAIQuestions(content string) tea.Cmd {
+func fetchAIQuestions(cfg config.AIConfig, content string) tea.Cmd {
 	return func() tea.Msg {
-		q, err := ai.AskQuestions(m.cfg.AI, content)
-		if err != nil {
-			m.aiEnabled = false
-			return nil
-		}
-		m.aiQuestions = q
-		return nil
+		q, err := ai.AskQuestions(cfg, content)
+		return aiQuestionsMsg{questions: q, err: err}
 	}
+}
+
+func (m Model) updateAIQuestions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Quit):
+		m.confirmQuit = true
+		return m, nil
+	case key.Matches(msg, keys.Enter):
+		if m.aiLoading {
+			return m, nil // still waiting for questions
+		}
+		answer := m.textarea.Value()
+		card := m.currentCard()
+		content, _ := readNoteContent(card.Path)
+		m.viewport.SetContent(renderMarkdown(content))
+		transcript := m.aiQuestions + "\n\nAnswer:\n" + answer
+		m.aiLoading = true
+		m.state = stateReveal
+		return m, fetchAIEval(m.cfg.AI, content, transcript)
+	}
+	var cmd tea.Cmd
+	m.textarea, cmd = m.textarea.Update(msg)
+	return m, cmd
 }
 
 func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -225,29 +269,16 @@ func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmQuit = true
 		return m, nil
 	case key.Matches(msg, keys.Enter):
-		if m.aiEnabled && m.aiQuestions != "" {
-			// collect answer and send to AI evaluator
-			answer := m.textarea.Value()
-			card := m.currentCard()
-			content, _ := readNoteContent(card.Path)
-			transcript := m.aiQuestions + "\n\nAnswer:\n" + answer
-			m.aiLoading = true
-			return m, m.fetchAIEval(content, transcript)
-		}
 		m.state = stateGrading
 	}
 	var cmd tea.Cmd
-	if m.aiEnabled && m.aiQuestions != "" {
-		m.textarea, cmd = m.textarea.Update(msg)
-	} else {
-		m.viewport, cmd = m.viewport.Update(msg)
-	}
+	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
 }
 
-func (m Model) fetchAIEval(content, transcript string) tea.Cmd {
+func fetchAIEval(cfg config.AIConfig, content, transcript string) tea.Cmd {
 	return func() tea.Msg {
-		grade, rationale, err := ai.Evaluate(m.cfg.AI, content, transcript)
+		grade, rationale, err := ai.Evaluate(cfg, content, transcript)
 		return aiEvalResult{grade: grade, rationale: rationale, err: err}
 	}
 }
@@ -327,6 +358,8 @@ func (m Model) View() string {
 		return m.viewPreSession()
 	case stateRecall:
 		return m.viewRecall()
+	case stateAIQuestions:
+		return m.viewAIQuestions()
 	case stateReveal:
 		return m.viewReveal()
 	case stateGrading:
@@ -375,6 +408,23 @@ func (m Model) viewRecall() string {
 	return b.String()
 }
 
+func (m Model) viewAIQuestions() string {
+	card := m.currentCard()
+	if card == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
+	if m.aiLoading {
+		b.WriteString(hintStyle.Render("  AI is generating questions..."))
+		return b.String()
+	}
+	b.WriteString(aiPanelStyle.Render(m.aiQuestions) + "\n\n")
+	b.WriteString(m.textarea.View() + "\n\n")
+	b.WriteString(hintStyle.Render("[Enter] Submit answers and reveal note  [q] Quit"))
+	return b.String()
+}
+
 func (m Model) viewReveal() string {
 	card := m.currentCard()
 	if card == nil {
@@ -383,18 +433,11 @@ func (m Model) viewReveal() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
 	b.WriteString(m.viewport.View() + "\n")
-
-	if m.aiEnabled {
-		if m.aiLoading {
-			b.WriteString(hintStyle.Render("  AI is generating questions...\n"))
-		} else if m.aiQuestions != "" {
-			b.WriteString(aiPanelStyle.Render(m.aiQuestions) + "\n")
-			b.WriteString(m.textarea.View() + "\n")
-			b.WriteString(hintStyle.Render("[Enter] Submit answer"))
-			return b.String()
-		}
+	if m.aiEnabled && m.aiLoading {
+		b.WriteString(hintStyle.Render("  AI is evaluating your answers...\n"))
+	} else {
+		b.WriteString(hintStyle.Render("[Enter] Grade  [↑/↓] Scroll  [q] Quit"))
 	}
-	b.WriteString(hintStyle.Render("[Enter] Grade  [↑/↓] Scroll  [q] Quit"))
 	return b.String()
 }
 
