@@ -332,7 +332,7 @@ func (m Model) updateGrading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// AI eval panel: accept or override
 	if m.aiEval != nil {
 		switch msg.String() {
-		case "q", "esc":
+		case "esc":
 			m.confirmQuit = true
 			return m, nil
 		case "a", "A":
@@ -431,14 +431,14 @@ func (m Model) viewPreSession() string {
 	fmt.Fprintf(&b, "  Daily limit:  %d\n\n", m.dailyLimit)
 	if due == 0 {
 		b.WriteString("  Nothing due today! Great work.\n\n")
-		b.WriteString(hintStyle.Render("[q] Quit"))
+		b.WriteString(hintStyle.Render("[Esc] Quit"))
 		return b.String()
 	}
 	if due > m.dailyLimit {
 		b.WriteString(warningStyle.Render(fmt.Sprintf("  Warning: %d cards due (limit: %d)\n", due, m.dailyLimit)))
-		b.WriteString(hintStyle.Render("  [Enter] Cap session  [a] Review all  [q] Quit\n"))
+		b.WriteString(hintStyle.Render("  [Enter] Cap session  [a] Review all  [Esc] Quit\n"))
 	} else {
-		b.WriteString(hintStyle.Render("  [Enter] Start  [q] Quit\n"))
+		b.WriteString(hintStyle.Render("  [Enter] Start  [Esc] Quit\n"))
 	}
 	if m.aiEnabled {
 		b.WriteString("\n  " + boldStyle.Render("[AI mode: on]"))
@@ -472,7 +472,7 @@ func (m Model) viewAIQuestions() string {
 	}
 	b.WriteString(m.viewport.View() + "\n")
 	b.WriteString(m.textarea.View() + "\n")
-	b.WriteString(hintStyle.Render("[Enter] Submit answers and reveal note  [↑/↓] Scroll  [q] Quit"))
+	b.WriteString(hintStyle.Render("[Enter] Submit answers and reveal note  [↑/↓] Scroll  [Esc] Quit"))
 	return b.String()
 }
 
@@ -484,9 +484,9 @@ func (m Model) viewReveal() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
 	b.WriteString(m.viewport.View() + "\n")
-	hint := "[Enter] Grade  [↑/↓] Scroll  [q] Quit"
+	hint := "[Enter] Grade  [↑/↓] Scroll  [Esc] Quit"
 	if m.aiEnabled && m.aiLoading {
-		hint = "[Enter] Grade  [↑/↓] Scroll  [q] Quit  · AI evaluating in background…"
+		hint = "[Enter] Grade  [↑/↓] Scroll  [Esc] Quit  · AI evaluating in background…"
 	}
 	b.WriteString(hintStyle.Render(hint))
 	return b.String()
@@ -507,7 +507,7 @@ func (m Model) viewGrading() string {
 			var b strings.Builder
 			b.WriteString(boldStyle.Render("AI Evaluation") + "\n")
 			b.WriteString(m.evalVP.View() + "\n")
-			b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [↑/↓] Scroll  [q] Quit"))
+			b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [↑/↓] Scroll  [Esc] Quit"))
 			return b.String()
 		}
 		// AI failed — fall through to manual grading
@@ -518,7 +518,7 @@ func (m Model) viewGrading() string {
 	b.WriteString("  [1] All correct\n")
 	b.WriteString("  [2] Partially correct\n")
 	b.WriteString("  [3] Needs review\n\n")
-	b.WriteString(hintStyle.Render("[q] Quit"))
+	b.WriteString(hintStyle.Render("[Esc] Quit"))
 	return b.String()
 }
 

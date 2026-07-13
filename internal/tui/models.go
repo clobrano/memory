@@ -34,7 +34,7 @@ type keyMap struct {
 
 var keys = keyMap{
 	Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
-	Quit:     key.NewBinding(key.WithKeys("q", "esc"), key.WithHelp("q", "quit")),
+	Quit:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("Esc", "quit")),
 	One:      key.NewBinding(key.WithKeys("1"), key.WithHelp("1", "all correct")),
 	Two:      key.NewBinding(key.WithKeys("2"), key.WithHelp("2", "partially correct")),
 	Three:    key.NewBinding(key.WithKeys("3"), key.WithHelp("3", "needs review")),
