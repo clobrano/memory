@@ -67,10 +67,19 @@ func invoke(cfg config.AIConfig, prompt string) (string, error) {
 	return out.String(), nil
 }
 
-func AskQuestions(cfg config.AIConfig, noteContent string) (string, error) {
+func AskQuestions(cfg config.AIConfig, noteContent string) (questions, suggestions string, err error) {
 	template := loadPrompt(cfg.QuestionPromptFile, defaultQuestionsPrompt)
 	prompt := strings.ReplaceAll(template, "{{NOTE_CONTENT}}", noteContent)
-	return invoke(cfg, prompt)
+	output, err := invoke(cfg, prompt)
+	if err != nil {
+		return "", "", err
+	}
+	parts := strings.SplitN(output, "\n---\n", 2)
+	questions = strings.TrimSpace(parts[0])
+	if len(parts) > 1 {
+		suggestions = strings.TrimSpace(parts[1])
+	}
+	return questions, suggestions, nil
 }
 
 func Evaluate(cfg config.AIConfig, noteContent, qaTranscript string) (grade, rationale string, err error) {

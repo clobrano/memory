@@ -34,8 +34,9 @@ type gradeResult struct {
 }
 
 type aiQuestionsMsg struct {
-	questions string
-	err       error
+	questions   string
+	suggestions string
+	err         error
 }
 
 type aiEvalResult struct {
@@ -62,10 +63,11 @@ type Model struct {
 	streak     int
 
 	// grading
-	reviewed    []gradeResult
-	aiQuestions string
-	aiEval      *aiEvalResult
-	aiLoading   bool
+	reviewed      []gradeResult
+	aiQuestions   string
+	aiSuggestions string
+	aiEval        *aiEvalResult
+	aiLoading     bool
 
 	// quit confirmation
 	confirmQuit bool
@@ -145,8 +147,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w = 20
 			}
 			m.aiQuestions = msg.questions
+			m.aiSuggestions = msg.suggestions
+			vpContent := wordwrap.String(msg.questions, w)
+			if msg.suggestions != "" {
+				vpContent += "\n\n" + hintStyle.Render("--- note suggestion ---\n"+wordwrap.String(msg.suggestions, w))
+			}
 			m.viewport.Height = m.aiQuestionsViewportHeight()
-			m.viewport.SetContent(wordwrap.String(msg.questions, w))
+			m.viewport.SetContent(vpContent)
 			m.viewport.GotoTop()
 			m.textarea.SetHeight(m.aiAnswerHeight())
 			m.textarea.Focus()
@@ -247,6 +254,7 @@ func (m Model) beginCardWithAI() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.aiQuestions = ""
+	m.aiSuggestions = ""
 	m.aiEval = nil
 	m.aiLoading = true
 	m.textarea.Reset()
@@ -277,8 +285,8 @@ func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func fetchAIQuestions(cfg config.AIConfig, content string) tea.Cmd {
 	return func() tea.Msg {
-		q, err := ai.AskQuestions(cfg, content)
-		return aiQuestionsMsg{questions: q, err: err}
+		q, s, err := ai.AskQuestions(cfg, content)
+		return aiQuestionsMsg{questions: q, suggestions: s, err: err}
 	}
 }
 
@@ -388,6 +396,7 @@ func (m Model) applyGrade(grade fsrs.Grade) (tea.Model, tea.Cmd) {
 	}
 	m.state = stateRecall
 	m.aiQuestions = ""
+	m.aiSuggestions = ""
 	m.aiEval = nil
 	return m, nil
 }
