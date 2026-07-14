@@ -14,8 +14,9 @@ type Review struct {
 }
 
 func InsertReview(db *sql.DB, r Review) error {
+	at := r.ReviewedAt.UTC().Truncate(time.Second).Format("2006-01-02T15:04:05Z")
 	_, err := db.Exec(`INSERT INTO review_history(card_id,reviewed_at,grade,rating) VALUES(?,?,?,?)`,
-		r.CardID, r.ReviewedAt, r.Grade, r.Rating)
+		r.CardID, at, r.Grade, r.Rating)
 	return err
 }
 

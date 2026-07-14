@@ -53,7 +53,11 @@ func GetDueCards(db *sql.DB, keywords []string) ([]Card, error) {
 	now := time.Now().Format("2006-01-02")
 	query := `SELECT id,path,title,tag,first_indexed,stability,difficulty,
 		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due
-		FROM cards WHERE (next_due <= ? OR next_due IS NULL OR next_due = '') ORDER BY next_due ASC`
+		FROM cards WHERE (next_due <= ? OR next_due IS NULL OR next_due = '')
+		ORDER BY
+		  CASE WHEN reps = 0 THEN 0 ELSE 1 END ASC,
+		  CASE WHEN reps = 0 THEN first_indexed END DESC,
+		  next_due ASC`
 	rows, err := db.Query(query, now)
 	if err != nil {
 		return nil, err
