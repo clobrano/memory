@@ -43,6 +43,30 @@ func EnsureDefaultPrompts(dir string) (questionsPath, evaluatePath string, err e
 	return questionsPath, evaluatePath, nil
 }
 
+// ResetPrompts overwrites the prompt files in <dir>/prompts/ with the
+// embedded defaults, regardless of whether they already exist.
+func ResetPrompts(dir string) error {
+	promptsDir := filepath.Join(dir, "prompts")
+	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
+		return fmt.Errorf("create prompts dir: %w", err)
+	}
+	files := []struct {
+		name    string
+		content string
+	}{
+		{"questions.txt", defaultQuestionsPrompt},
+		{"evaluate.txt", defaultEvaluatePrompt},
+	}
+	for _, f := range files {
+		path := filepath.Join(promptsDir, f.name)
+		if err := os.WriteFile(path, []byte(f.content), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", f.name, err)
+		}
+		fmt.Printf("reset %s\n", path)
+	}
+	return nil
+}
+
 func loadPrompt(path, fallback string) string {
 	if path == "" {
 		return fallback
