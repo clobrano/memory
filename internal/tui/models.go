@@ -18,18 +18,19 @@ const (
 )
 
 type keyMap struct {
-	Enter  key.Binding
-	Quit   key.Binding
-	One    key.Binding
-	Two    key.Binding
-	Three  key.Binding
-	Cap    key.Binding
-	All    key.Binding
-	Accept key.Binding
+	Enter    key.Binding
+	Quit     key.Binding
+	One      key.Binding
+	Two      key.Binding
+	Three    key.Binding
+	Cap      key.Binding
+	All      key.Binding
+	Accept   key.Binding
 	Override key.Binding
-	Up     key.Binding
-	Down   key.Binding
+	Up       key.Binding
+	Down     key.Binding
 	Continue key.Binding
+	Skip     key.Binding
 }
 
 var keys = keyMap{
@@ -45,6 +46,7 @@ var keys = keyMap{
 	Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 	Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
 	Continue: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "continue")),
+	Skip:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "skip")),
 }
 
 func renderMarkdown(content string) string {
