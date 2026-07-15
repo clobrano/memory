@@ -183,6 +183,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y":
 				return m, tea.Quit
+			case "s", "S":
+				m.confirmQuit = false
+				return m.skipCard()
 			default:
 				m.confirmQuit = false
 				return m, nil
@@ -268,8 +271,6 @@ func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Quit):
 		m.confirmQuit = true
 		return m, nil
-	case key.Matches(msg, keys.Skip):
-		return m.skipCard()
 	case key.Matches(msg, keys.Enter):
 		card := m.currentCard()
 		if card == nil {
@@ -297,8 +298,6 @@ func (m Model) updateAIQuestions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Quit):
 		m.confirmQuit = true
 		return m, nil
-	case key.Matches(msg, keys.Skip):
-		return m.skipCard()
 	case key.Matches(msg, keys.Enter):
 		if m.aiLoading {
 			return m, nil // still waiting for questions
@@ -324,8 +323,6 @@ func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Quit):
 		m.confirmQuit = true
 		return m, nil
-	case key.Matches(msg, keys.Skip):
-		return m.skipCard()
 	case key.Matches(msg, keys.Enter):
 		m.state = stateGrading
 		return m, nil
@@ -349,8 +346,6 @@ func (m Model) updateGrading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.confirmQuit = true
 			return m, nil
-		case "s", "S":
-			return m.skipCard()
 		case "a", "A":
 			grade := aiGradeToFSRS(m.aiEval.grade)
 			return m.applyGrade(grade)
@@ -367,8 +362,6 @@ func (m Model) updateGrading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Quit):
 		m.confirmQuit = true
 		return m, nil
-	case key.Matches(msg, keys.Skip):
-		return m.skipCard()
 	case key.Matches(msg, keys.One):
 		return m.applyGrade(fsrs.GradeAllCorrect)
 	case key.Matches(msg, keys.Two):
@@ -437,7 +430,7 @@ func (m Model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if m.confirmQuit {
-		return "\nQuit session? [y/N]: "
+		return "\nQuit session? [y] Quit  [s] Skip card  [any] Cancel: "
 	}
 	switch m.state {
 	case statePreSession:
@@ -490,7 +483,7 @@ func (m Model) viewRecall() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", hintStyle.Render(progress))
 	b.WriteString(titleStyle.Render(card.Title) + "\n\n")
-	b.WriteString(hintStyle.Render("Try to recall the content, then press ENTER  [s] Skip"))
+	b.WriteString(hintStyle.Render("Try to recall the content, then press ENTER  [Esc] Skip/Quit"))
 	return b.String()
 }
 
@@ -507,7 +500,7 @@ func (m Model) viewAIQuestions() string {
 	}
 	b.WriteString(m.viewport.View() + "\n")
 	b.WriteString(m.textarea.View() + "\n")
-	b.WriteString(hintStyle.Render("[Enter] Submit answers and reveal note  [s] Skip  [↑/↓] Scroll  [Esc] Quit"))
+	b.WriteString(hintStyle.Render("[Enter] Submit answers and reveal note  [↑/↓] Scroll  [Esc] Skip/Quit"))
 	return b.String()
 }
 
@@ -519,9 +512,9 @@ func (m Model) viewReveal() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
 	b.WriteString(m.viewport.View() + "\n")
-	hint := "[Enter] Grade  [s] Skip  [↑/↓] Scroll  [Esc] Quit"
+	hint := "[Enter] Grade  [↑/↓] Scroll  [Esc] Skip/Quit"
 	if m.aiEnabled && m.aiLoading {
-		hint = "[Enter] Grade  [s] Skip  [↑/↓] Scroll  [Esc] Quit  · AI evaluating in background…"
+		hint = "[Enter] Grade  [↑/↓] Scroll  [Esc] Skip/Quit  · AI evaluating in background…"
 	}
 	b.WriteString(hintStyle.Render(hint))
 	return b.String()
@@ -542,7 +535,7 @@ func (m Model) viewGrading() string {
 			var b strings.Builder
 			b.WriteString(boldStyle.Render("AI Evaluation") + "\n")
 			b.WriteString(m.evalVP.View() + "\n")
-			b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [s] Skip  [↑/↓] Scroll  [Esc] Quit"))
+			b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [↑/↓] Scroll  [Esc] Skip/Quit"))
 			return b.String()
 		}
 		// AI failed — fall through to manual grading
@@ -553,7 +546,7 @@ func (m Model) viewGrading() string {
 	b.WriteString("  [1] All correct\n")
 	b.WriteString("  [2] Partially correct\n")
 	b.WriteString("  [3] Needs review\n\n")
-	b.WriteString(hintStyle.Render("[s] Skip  [Esc] Quit"))
+	b.WriteString(hintStyle.Render("[Esc] Skip/Quit"))
 	return b.String()
 }
 
