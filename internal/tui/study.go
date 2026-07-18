@@ -543,9 +543,35 @@ func (m Model) viewGrading() string {
 
 	var b strings.Builder
 	b.WriteString(boldStyle.Render("How did you do?") + "\n\n")
-	b.WriteString("  [1] All correct\n")
-	b.WriteString("  [2] Partially correct\n")
-	b.WriteString("  [3] Needs review\n\n")
+
+	// Calculate reschedule dates for each grade
+	now := time.Now()
+	schedules := make(map[fsrs.Grade]time.Time)
+	for _, grade := range []fsrs.Grade{fsrs.GradeAllCorrect, fsrs.GradePartiallyCorrect, fsrs.GradeNeedsReview} {
+		if scheduled, err := fsrs.Schedule(*card, grade, now); err == nil {
+			schedules[grade] = scheduled.NextDue
+		}
+	}
+
+	// Display grades with reschedule info
+	b.WriteString("  [1] All correct")
+	if nextDue, ok := schedules[fsrs.GradeAllCorrect]; ok {
+		b.WriteString(" → " + formatRelativeDate(nextDue))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("  [2] Partially correct")
+	if nextDue, ok := schedules[fsrs.GradePartiallyCorrect]; ok {
+		b.WriteString(" → " + formatRelativeDate(nextDue))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("  [3] Needs review")
+	if nextDue, ok := schedules[fsrs.GradeNeedsReview]; ok {
+		b.WriteString(" → " + formatRelativeDate(nextDue))
+	}
+	b.WriteString("\n\n")
+
 	b.WriteString(hintStyle.Render("[Esc] Skip/Quit"))
 	return b.String()
 }
@@ -631,4 +657,18 @@ func aiGradeToFSRS(grade string) fsrs.Grade {
 	default:
 		return fsrs.GradeNeedsReview
 	}
+}
+
+func formatRelativeDate(t time.Time) string {
+	days := int(t.Sub(time.Now()).Hours() / 24)
+	if days < 0 {
+		days = 0
+	}
+	if days == 0 {
+		return "Due today"
+	}
+	if days == 1 {
+		return "Due in 1 day"
+	}
+	return fmt.Sprintf("Due in %d days", days)
 }
