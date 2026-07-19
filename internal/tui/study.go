@@ -535,6 +535,14 @@ func (m Model) viewGrading() string {
 			var b strings.Builder
 			b.WriteString(boldStyle.Render("AI Evaluation") + "\n")
 			b.WriteString(m.evalVP.View() + "\n")
+
+			// Show reschedule info for the AI-suggested grade
+			aiGrade := aiGradeToFSRS(m.aiEval.grade)
+			if scheduled, err := fsrs.Schedule(*card, aiGrade, time.Now()); err == nil {
+				rescheduleInfo := formatRelativeDate(scheduled.NextDue)
+				b.WriteString(hintStyle.Render("  → " + rescheduleInfo + "\n\n"))
+			}
+
 			b.WriteString(hintStyle.Render("[a] Accept  [o] Override  [↑/↓] Scroll  [Esc] Skip/Quit"))
 			return b.String()
 		}
