@@ -52,7 +52,7 @@ daily_limit = 20
 # binary = "claude"
 
 # Arguments passed to the binary before the prompt is piped to stdin.
-# args = ["--model", "claude-opus-4-5", "-p"]
+# args = ["--model", "claude-haiku-4-5-20251001", "--print"]
 
 # Override the default prompt templates (written to the prompts/ dir below).
 # question_prompt_file = ""
