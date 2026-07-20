@@ -668,11 +668,11 @@ func aiGradeToFSRS(grade string) fsrs.Grade {
 }
 
 func formatRelativeDate(t time.Time) string {
-	days := int(t.Sub(time.Now()).Hours() / 24)
-	if days < 0 {
-		days = 0
-	}
-	if days == 0 {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	due := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, now.Location())
+	days := int(due.Sub(today).Hours() / 24)
+	if days <= 0 {
 		return "Due today"
 	}
 	if days == 1 {
