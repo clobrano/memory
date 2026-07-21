@@ -51,6 +51,20 @@ func GetReviewsPerDay(db *sql.DB, days int) (map[string]int, error) {
 	return result, rows.Err()
 }
 
+func GetReviewsByCardID(db *sql.DB, cardID int64) ([]Review, error) {
+	rows, err := db.Query(`SELECT id,card_id,reviewed_at,grade,rating FROM review_history WHERE card_id=? ORDER BY reviewed_at`, cardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanReviews(rows)
+}
+
+func UpdateReviewCardID(db *sql.DB, oldCardID, newCardID int64) error {
+	_, err := db.Exec(`UPDATE review_history SET card_id=? WHERE card_id=?`, newCardID, oldCardID)
+	return err
+}
+
 func scanReviews(rows *sql.Rows) ([]Review, error) {
 	var reviews []Review
 	for rows.Next() {
