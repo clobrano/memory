@@ -111,6 +111,30 @@ func DeleteCard(db *sql.DB, id int64) error {
 	return err
 }
 
+func GetCardByID(db *sql.DB, id int64) (*Card, error) {
+	row := db.QueryRow(`SELECT id,path,title,tag,first_indexed,stability,difficulty,
+		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due
+		FROM cards WHERE id=?`, id)
+	return scanCard(row)
+}
+
+func MergeCards(db *sql.DB, oldCard, newCard *Card) error {
+	// Combine reps and lapses
+	newReps := newCard.Reps + oldCard.Reps
+	newLapses := newCard.Lapses + oldCard.Lapses
+
+	// Keep the older first_indexed date
+	firstIndexed := oldCard.FirstIndexed
+	if !newCard.FirstIndexed.IsZero() && (oldCard.FirstIndexed.IsZero() || newCard.FirstIndexed.Before(oldCard.FirstIndexed)) {
+		firstIndexed = newCard.FirstIndexed
+	}
+
+	// Update newCard with merged data
+	_, err := db.Exec(`UPDATE cards SET first_indexed=?,reps=?,lapses=? WHERE id=?`,
+		firstIndexed, newReps, newLapses, newCard.ID)
+	return err
+}
+
 func ListAllCards(db *sql.DB) ([]Card, error) {
 	rows, err := db.Query(`SELECT id,path,title,tag,first_indexed,stability,difficulty,
 		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due
