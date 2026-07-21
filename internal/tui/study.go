@@ -45,6 +45,12 @@ type aiEvalResult struct {
 	err       error
 }
 
+type aiNextQuestionsMsg struct {
+	questions   string
+	suggestions string
+	err         error
+}
+
 type Model struct {
 	db         *sql.DB
 	cfg        *config.Config
@@ -68,6 +74,11 @@ type Model struct {
 	aiSuggestions string
 	aiEval        *aiEvalResult
 	aiLoading     bool
+
+	// prefetching for next card
+	nextAiQuestions   string
+	nextAiSuggestions string
+	nextAiPrefetching bool
 
 	// quit confirmation
 	confirmQuit bool
@@ -175,6 +186,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.evalVP.Height = m.viewportHeightForGrading()
 			m.evalVP.SetContent(content)
 			m.evalVP.GotoTop()
+
+			// Prefetch questions for the next card while user reviews the grade
+			if m.aiEnabled && m.index+1 < len(m.cards) && !m.nextAiPrefetching {
+				m.nextAiPrefetching = true
+				nextCard := &m.cards[m.index+1]
+				nextContent, _ := readNoteContent(nextCard.Path)
+				return m, fetchAIQuestionsForNext(m.cfg.AI, nextContent)
+			}
+		}
+		return m, nil
+
+	case aiNextQuestionsMsg:
+		m.nextAiPrefetching = false
+		if msg.err == nil && msg.questions != "" {
+			m.nextAiQuestions = msg.questions
+			m.nextAiSuggestions = msg.suggestions
 		}
 		return m, nil
 
@@ -250,18 +277,45 @@ func (m Model) startSession() (tea.Model, tea.Cmd) {
 }
 
 // beginCardWithAI immediately starts fetching questions for the current card.
+// If questions were prefetched for this card, they are used immediately.
 func (m Model) beginCardWithAI() (tea.Model, tea.Cmd) {
 	card := m.currentCard()
 	if card == nil {
 		m.state = stateSessionSummary
 		return m, nil
 	}
-	m.aiQuestions = ""
-	m.aiSuggestions = ""
 	m.aiEval = nil
-	m.aiLoading = true
 	m.textarea.Reset()
 	m.state = stateAIQuestions
+
+	// Use prefetched questions if available
+	if m.nextAiQuestions != "" {
+		m.aiQuestions = m.nextAiQuestions
+		m.aiSuggestions = m.nextAiSuggestions
+		m.nextAiQuestions = ""
+		m.nextAiSuggestions = ""
+		m.nextAiPrefetching = false
+
+		w := m.width - 2
+		if w < 20 {
+			w = 20
+		}
+		vpContent := wordwrap.String(m.aiQuestions, w)
+		if m.aiSuggestions != "" {
+			vpContent += "\n\n" + hintStyle.Render("--- note suggestion ---\n"+wordwrap.String(m.aiSuggestions, w))
+		}
+		m.viewport.Height = m.aiQuestionsViewportHeight()
+		m.viewport.SetContent(vpContent)
+		m.viewport.GotoTop()
+		m.textarea.SetHeight(m.aiAnswerHeight())
+		m.textarea.Focus()
+		return m, nil
+	}
+
+	// Otherwise, fetch questions now
+	m.aiQuestions = ""
+	m.aiSuggestions = ""
+	m.aiLoading = true
 	content, _ := readNoteContent(card.Path)
 	return m, fetchAIQuestions(m.cfg.AI, content)
 }
@@ -290,6 +344,13 @@ func fetchAIQuestions(cfg config.AIConfig, content string) tea.Cmd {
 	return func() tea.Msg {
 		q, s, err := ai.AskQuestions(cfg, content)
 		return aiQuestionsMsg{questions: q, suggestions: s, err: err}
+	}
+}
+
+func fetchAIQuestionsForNext(cfg config.AIConfig, content string) tea.Cmd {
+	return func() tea.Msg {
+		q, s, err := ai.AskQuestions(cfg, content)
+		return aiNextQuestionsMsg{questions: q, suggestions: s, err: err}
 	}
 }
 
@@ -398,9 +459,7 @@ func (m Model) applyGrade(grade fsrs.Grade) (tea.Model, tea.Cmd) {
 		return m.beginCardWithAI()
 	}
 	m.state = stateRecall
-	m.aiQuestions = ""
-	m.aiSuggestions = ""
-	m.aiEval = nil
+	m.clearCurrentQuestions()
 	return m, nil
 }
 
@@ -414,10 +473,14 @@ func (m Model) skipCard() (tea.Model, tea.Cmd) {
 		return m.beginCardWithAI()
 	}
 	m.state = stateRecall
+	m.clearCurrentQuestions()
+	return m, nil
+}
+
+func (m Model) clearCurrentQuestions() {
 	m.aiQuestions = ""
 	m.aiSuggestions = ""
 	m.aiEval = nil
-	return m, nil
 }
 
 func (m Model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
