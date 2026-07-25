@@ -9,75 +9,66 @@ import (
 // ExtractNoteContent removes YAML frontmatter and tags, returning only title + body
 func ExtractNoteContent(fullText string) string {
 	lines := strings.Split(fullText, "\n")
+	contentStart := skipFrontmatter(lines)
 
-	// Skip YAML frontmatter
-	frontmatterCount := 0
-	contentStart := 0
-
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "---" {
-			frontmatterCount++
-			if frontmatterCount == 2 {
-				// Found end of frontmatter, start from next line
-				contentStart = i + 1
-				break
-			}
-		}
-	}
-
-	// Skip blank lines after frontmatter
-	for i := contentStart; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) != "" {
-			contentStart = i
-			break
-		}
-	}
-
-	// Find the title (first line with "# ")
-	titleStart := -1
+	titleIdx := -1
 	for i := contentStart; i < len(lines); i++ {
 		if strings.HasPrefix(strings.TrimSpace(lines[i]), "# ") {
-			titleStart = i
+			titleIdx = i
 			break
 		}
 	}
 
-	// If no title found, start from content start
-	if titleStart == -1 {
-		titleStart = contentStart
+	if titleIdx == -1 {
+		return strings.TrimSpace(strings.Join(lines[contentStart:], "\n"))
 	}
 
-	// Skip tags after title (lines that start with # but aren't headings)
-	contentLinesStart := titleStart
-	if titleStart < len(lines) {
-		// Skip the title line itself
-		contentLinesStart = titleStart + 1
+	// Body begins at the first line after the title that is neither blank nor a tag line.
+	bodyStart := len(lines)
+	for i := titleIdx + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || isTagLine(trimmed) {
+			continue
+		}
+		bodyStart = i
+		break
+	}
 
-		// Skip tag lines (lines that are just tags like "#tag1 #tag2")
-		for i := contentLinesStart; i < len(lines); i++ {
-			trimmed := strings.TrimSpace(lines[i])
-			if trimmed == "" {
-				// Skip blank lines
-				continue
-			}
-			// Check if line is all tags (starts with #, isn't a heading)
-			if strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "# ") {
-				// It's a tag line, skip it
-				continue
-			}
-			// Found first non-tag line
-			contentLinesStart = i
-			break
+	title := strings.TrimSpace(lines[titleIdx])
+	body := strings.TrimSpace(strings.Join(lines[bodyStart:], "\n"))
+	if body == "" {
+		return title
+	}
+	return title + "\n\n" + body
+}
+
+// skipFrontmatter returns the index of the first line after a leading YAML
+// frontmatter block, or 0 when the text does not open with one.
+func skipFrontmatter(lines []string) int {
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return 0
+	}
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			return i + 1
 		}
 	}
+	return 0
+}
 
-	// Rebuild content from title onwards
-	if titleStart >= 0 && titleStart < len(lines) {
-		result := strings.Join(lines[titleStart:], "\n")
-		return strings.TrimSpace(result)
+// isTagLine reports whether every token on the line is a "#tag", which
+// distinguishes a tag line from a Markdown heading such as "## Section".
+func isTagLine(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
 	}
-
-	return strings.TrimSpace(strings.Join(lines[contentStart:], "\n"))
+	for _, f := range fields {
+		if len(f) < 2 || f[0] != '#' || f[1] == '#' {
+			return false
+		}
+	}
+	return true
 }
 
 // ComputeNoteHash returns SHA256 hex of extracted content

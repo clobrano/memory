@@ -9,22 +9,22 @@ import (
 )
 
 type Card struct {
-	ID                      int64
-	Path                    string
-	Title                   string
-	Tag                     string
-	FirstIndexed            time.Time
-	Stability               float64
-	Difficulty              float64
-	ElapsedDays             int
-	ScheduledDays           int
-	Reps                    int
-	Lapses                  int
-	State                   string
-	LastReview              time.Time
-	NextDue                 time.Time
-	NoteContentHash         string
-	CachedQuestions         string
+	ID                       int64
+	Path                     string
+	Title                    string
+	Tag                      string
+	FirstIndexed             time.Time
+	Stability                float64
+	Difficulty               float64
+	ElapsedDays              int
+	ScheduledDays            int
+	Reps                     int
+	Lapses                   int
+	State                    string
+	LastReview               time.Time
+	NextDue                  time.Time
+	NoteContentHash          string
+	CachedQuestions          string
 	CachedQuestionsTimestamp int64
 }
 
@@ -169,13 +169,19 @@ type scanner interface {
 func scanCard(s scanner) (*Card, error) {
 	var c Card
 	var firstIndexed, lastReview, nextDue sql.NullString
+	// The cache columns were added by later migrations, so pre-existing rows hold NULL.
+	var noteContentHash, cachedQuestions sql.NullString
+	var cachedQuestionsTimestamp sql.NullInt64
 	err := s.Scan(&c.ID, &c.Path, &c.Title, &c.Tag, &firstIndexed,
 		&c.Stability, &c.Difficulty, &c.ElapsedDays, &c.ScheduledDays,
 		&c.Reps, &c.Lapses, &c.State, &lastReview, &nextDue,
-		&c.NoteContentHash, &c.CachedQuestions, &c.CachedQuestionsTimestamp)
+		&noteContentHash, &cachedQuestions, &cachedQuestionsTimestamp)
 	if err != nil {
 		return nil, err
 	}
+	c.NoteContentHash = noteContentHash.String
+	c.CachedQuestions = cachedQuestions.String
+	c.CachedQuestionsTimestamp = cachedQuestionsTimestamp.Int64
 	const layout = "2006-01-02T15:04:05Z07:00"
 	parseTime := func(s sql.NullString) time.Time {
 		if !s.Valid || s.String == "" {

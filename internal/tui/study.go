@@ -71,13 +71,13 @@ type Model struct {
 	streak     int
 
 	// grading
-	reviewed          []gradeResult
-	aiQuestions       string
-	aiSuggestions     string
-	aiQuestionsSource string // "fresh" or "cached"
+	reviewed           []gradeResult
+	aiQuestions        string
+	aiSuggestions      string
+	aiQuestionsSource  string // "fresh" or "cached"
 	noteContentChanged bool   // true if cached note differs from current
-	aiEval            *aiEvalResult
-	aiLoading         bool
+	aiEval             *aiEvalResult
+	aiLoading          bool
 
 	// prefetching for next card
 	nextAiQuestions   string
@@ -87,7 +87,7 @@ type Model struct {
 	// quit confirmation
 	confirmQuit bool
 
-	err error
+	err    error
 	width  int
 	height int
 }
@@ -514,13 +514,13 @@ func (m Model) applyGrade(grade fsrs.Grade) (tea.Model, tea.Cmd) {
 		return m.beginCardWithAI()
 	}
 	// AI disabled: try to load cached questions
-	card := m.currentCard()
+	card = m.currentCard()
 	if card != nil {
 		content, _ := readNoteContent(card.Path)
 		return m.tryLoadCachedQuestions(content)
 	}
 	m.state = stateRecall
-	m.clearCurrentQuestions()
+	m = m.clearCurrentQuestions()
 	return m, nil
 }
 
@@ -540,16 +540,17 @@ func (m Model) skipCard() (tea.Model, tea.Cmd) {
 		return m.tryLoadCachedQuestions(content)
 	}
 	m.state = stateRecall
-	m.clearCurrentQuestions()
+	m = m.clearCurrentQuestions()
 	return m, nil
 }
 
-func (m Model) clearCurrentQuestions() {
+func (m Model) clearCurrentQuestions() Model {
 	m.aiQuestions = ""
 	m.aiSuggestions = ""
 	m.aiQuestionsSource = ""
 	m.noteContentChanged = false
 	m.aiEval = nil
+	return m
 }
 
 func (m Model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

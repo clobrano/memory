@@ -98,28 +98,15 @@ func invoke(cfg config.AIConfig, prompt string) (string, error) {
 // If database and cardID are provided, it attempts to reuse cached questions if the note hasn't changed
 // Returns: questions, suggestions, isCached, noteChanged, error
 func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardID int64) (questions, suggestions string, isCached, noteChanged bool, err error) {
-	// Compute hash of note content
 	currentHash := cache.ComputeNoteHash(noteContent)
-	isCached = false
-	noteChanged = false
 
-	// Check cache if database is provided
+	// Reuse cached questions only while the note content is unchanged; a changed
+	// note must be re-asked, otherwise the questions would describe stale content.
 	if dbConn != nil && cardID > 0 {
-		card, err := db.GetCardByID(dbConn, cardID)
-		if err == nil && card != nil && card.CachedQuestions != "" {
-			// We have cached questions
-			isCached = true
-			// Check if note content changed
-			if card.NoteContentHash != currentHash {
-				noteChanged = true
-			}
-			// Return cached questions regardless
-			parts := strings.SplitN(card.CachedQuestions, "\n---\n", 2)
-			questions = strings.TrimSpace(parts[0])
-			if len(parts) > 1 {
-				suggestions = strings.TrimSpace(parts[1])
-			}
-			return questions, suggestions, isCached, noteChanged, nil
+		card, cacheErr := db.GetCardByID(dbConn, cardID)
+		if cacheErr == nil && card != nil && card.CachedQuestions != "" && card.NoteContentHash == currentHash {
+			questions, suggestions = splitQuestions(card.CachedQuestions)
+			return questions, suggestions, true, false, nil
 		}
 	}
 
@@ -131,11 +118,7 @@ func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardI
 		return "", "", false, false, err
 	}
 
-	parts := strings.SplitN(output, "\n---\n", 2)
-	questions = strings.TrimSpace(parts[0])
-	if len(parts) > 1 {
-		suggestions = strings.TrimSpace(parts[1])
-	}
+	questions, suggestions = splitQuestions(output)
 
 	// Store in cache if database is provided
 	if dbConn != nil && cardID > 0 {
@@ -158,24 +141,18 @@ func GetCachedQuestions(dbConn *sql.DB, cardID int64, noteContent string) (quest
 		return "", "", false, false, err
 	}
 
-	isCached = true
-	if card.NoteContentHash != currentHash {
-		noteChanged = true
-	}
+	questions, suggestions = splitQuestions(card.CachedQuestions)
+	return questions, suggestions, true, card.NoteContentHash != currentHash, nil
+}
 
-	parts := strings.SplitN(card.CachedQuestions, "\n---\n", 2)
+// splitQuestions separates the questions block from the trailing note suggestion.
+func splitQuestions(raw string) (questions, suggestions string) {
+	parts := strings.SplitN(raw, "\n---\n", 2)
 	questions = strings.TrimSpace(parts[0])
 	if len(parts) > 1 {
 		suggestions = strings.TrimSpace(parts[1])
 	}
-
-	return questions, suggestions, isCached, noteChanged, nil
-}
-
-// AskQuestionsNoCache generates questions without caching (for backward compatibility)
-func AskQuestionsNoCache(cfg config.AIConfig, noteContent string) (questions, suggestions string, err error) {
-	q, s, _, _, err := AskQuestions(cfg, noteContent, nil, 0)
-	return q, s, err
+	return questions, suggestions
 }
 
 func Evaluate(cfg config.AIConfig, noteContent, qaTranscript string) (grade, rationale string, err error) {
