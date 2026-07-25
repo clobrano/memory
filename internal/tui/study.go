@@ -317,7 +317,7 @@ func (m Model) beginCardWithAI() (tea.Model, tea.Cmd) {
 	m.aiSuggestions = ""
 	m.aiLoading = true
 	content, _ := readNoteContent(card.Path)
-	return m, fetchAIQuestions(m.cfg.AI, content)
+	return m, fetchAIQuestions(m.cfg.AI, content, m.db, card.ID)
 }
 
 func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -340,9 +340,9 @@ func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func fetchAIQuestions(cfg config.AIConfig, content string) tea.Cmd {
+func fetchAIQuestions(cfg config.AIConfig, content string, dbConn *sql.DB, cardID int64) tea.Cmd {
 	return func() tea.Msg {
-		q, s, err := ai.AskQuestions(cfg, content)
+		q, s, err := ai.AskQuestions(cfg, content, dbConn, cardID)
 		return aiQuestionsMsg{questions: q, suggestions: s, err: err}
 	}
 }

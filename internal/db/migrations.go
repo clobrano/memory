@@ -41,6 +41,18 @@ var migrations = []migration{
 			rating      INTEGER
 		)`,
 	},
+	{
+		name: "003_cache_questions",
+		sql: `ALTER TABLE cards ADD COLUMN note_content_hash TEXT`,
+	},
+	{
+		name: "004_cache_questions_content",
+		sql: `ALTER TABLE cards ADD COLUMN cached_questions TEXT`,
+	},
+	{
+		name: "005_cache_questions_timestamp",
+		sql: `ALTER TABLE cards ADD COLUMN cached_questions_timestamp INTEGER`,
+	},
 }
 
 func RunMigrations(db *sql.DB) error {

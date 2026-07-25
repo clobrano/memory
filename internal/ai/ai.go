@@ -2,14 +2,18 @@ package ai
 
 import (
 	"bytes"
+	"database/sql"
 	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/clobrano/memory/internal/cache"
 	"github.com/clobrano/memory/internal/config"
+	"github.com/clobrano/memory/internal/db"
 )
 
 //go:embed prompts/questions.txt
@@ -91,19 +95,51 @@ func invoke(cfg config.AIConfig, prompt string) (string, error) {
 	return out.String(), nil
 }
 
-func AskQuestions(cfg config.AIConfig, noteContent string) (questions, suggestions string, err error) {
+// AskQuestions generates or retrieves cached questions for a note
+// If database and cardID are provided, it attempts to reuse cached questions if the note hasn't changed
+func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardID int64) (questions, suggestions string, err error) {
+	// Compute hash of note content
+	currentHash := cache.ComputeNoteHash(noteContent)
+
+	// Check cache if database is provided
+	if dbConn != nil && cardID > 0 {
+		card, err := db.GetCardByID(dbConn, cardID)
+		if err == nil && card != nil && card.NoteContentHash == currentHash && card.CachedQuestions != "" {
+			// Cache hit: return cached questions
+			parts := strings.SplitN(card.CachedQuestions, "\n---\n", 2)
+			questions = strings.TrimSpace(parts[0])
+			if len(parts) > 1 {
+				suggestions = strings.TrimSpace(parts[1])
+			}
+			return questions, suggestions, nil
+		}
+	}
+
+	// Cache miss: generate new questions
 	template := loadPrompt(cfg.QuestionPromptFile, defaultQuestionsPrompt)
 	prompt := strings.ReplaceAll(template, "{{NOTE_CONTENT}}", noteContent)
 	output, err := invoke(cfg, prompt)
 	if err != nil {
 		return "", "", err
 	}
+
 	parts := strings.SplitN(output, "\n---\n", 2)
 	questions = strings.TrimSpace(parts[0])
 	if len(parts) > 1 {
 		suggestions = strings.TrimSpace(parts[1])
 	}
+
+	// Store in cache if database is provided
+	if dbConn != nil && cardID > 0 {
+		_ = db.UpdateCachedQuestions(dbConn, cardID, currentHash, output)
+	}
+
 	return questions, suggestions, nil
+}
+
+// AskQuestionsNoCache generates questions without caching (for backward compatibility)
+func AskQuestionsNoCache(cfg config.AIConfig, noteContent string) (questions, suggestions string, err error) {
+	return AskQuestions(cfg, noteContent, nil, 0)
 }
 
 func Evaluate(cfg config.AIConfig, noteContent, qaTranscript string) (grade, rationale string, err error) {

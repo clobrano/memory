@@ -9,20 +9,23 @@ import (
 )
 
 type Card struct {
-	ID             int64
-	Path           string
-	Title          string
-	Tag            string
-	FirstIndexed   time.Time
-	Stability      float64
-	Difficulty     float64
-	ElapsedDays    int
-	ScheduledDays  int
-	Reps           int
-	Lapses         int
-	State          string
-	LastReview     time.Time
-	NextDue        time.Time
+	ID                      int64
+	Path                    string
+	Title                   string
+	Tag                     string
+	FirstIndexed            time.Time
+	Stability               float64
+	Difficulty              float64
+	ElapsedDays             int
+	ScheduledDays           int
+	Reps                    int
+	Lapses                  int
+	State                   string
+	LastReview              time.Time
+	NextDue                 time.Time
+	NoteContentHash         string
+	CachedQuestions         string
+	CachedQuestionsTimestamp int64
 }
 
 func UpsertCard(db *sql.DB, c Card) (int64, error) {
@@ -44,7 +47,8 @@ func UpsertCard(db *sql.DB, c Card) (int64, error) {
 
 func GetCardByPath(db *sql.DB, path string) (*Card, error) {
 	row := db.QueryRow(`SELECT id,path,title,tag,first_indexed,stability,difficulty,
-		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due
+		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due,
+		note_content_hash,cached_questions,cached_questions_timestamp
 		FROM cards WHERE path=?`, path)
 	return scanCard(row)
 }
@@ -52,7 +56,8 @@ func GetCardByPath(db *sql.DB, path string) (*Card, error) {
 func GetDueCards(db *sql.DB, keywords []string) ([]Card, error) {
 	now := time.Now().Format("2006-01-02")
 	query := `SELECT id,path,title,tag,first_indexed,stability,difficulty,
-		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due
+		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due,
+		note_content_hash,cached_questions,cached_questions_timestamp
 		FROM cards WHERE (next_due <= ? OR next_due IS NULL OR next_due = '')
 		ORDER BY
 		  CASE WHEN reps = 0 THEN 0 ELSE 1 END ASC,
@@ -113,7 +118,8 @@ func DeleteCard(db *sql.DB, id int64) error {
 
 func GetCardByID(db *sql.DB, id int64) (*Card, error) {
 	row := db.QueryRow(`SELECT id,path,title,tag,first_indexed,stability,difficulty,
-		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due
+		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due,
+		note_content_hash,cached_questions,cached_questions_timestamp
 		FROM cards WHERE id=?`, id)
 	return scanCard(row)
 }
@@ -137,7 +143,8 @@ func MergeCards(db *sql.DB, oldCard, newCard *Card) error {
 
 func ListAllCards(db *sql.DB) ([]Card, error) {
 	rows, err := db.Query(`SELECT id,path,title,tag,first_indexed,stability,difficulty,
-		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due
+		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due,
+		note_content_hash,cached_questions,cached_questions_timestamp
 		FROM cards ORDER BY next_due ASC`)
 	if err != nil {
 		return nil, err
@@ -164,7 +171,8 @@ func scanCard(s scanner) (*Card, error) {
 	var firstIndexed, lastReview, nextDue sql.NullString
 	err := s.Scan(&c.ID, &c.Path, &c.Title, &c.Tag, &firstIndexed,
 		&c.Stability, &c.Difficulty, &c.ElapsedDays, &c.ScheduledDays,
-		&c.Reps, &c.Lapses, &c.State, &lastReview, &nextDue)
+		&c.Reps, &c.Lapses, &c.State, &lastReview, &nextDue,
+		&c.NoteContentHash, &c.CachedQuestions, &c.CachedQuestionsTimestamp)
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +193,13 @@ func scanCard(s scanner) (*Card, error) {
 	c.LastReview = parseTime(lastReview)
 	c.NextDue = parseTime(nextDue)
 	return &c, nil
+}
+
+func UpdateCachedQuestions(db *sql.DB, id int64, hash, questions string) error {
+	_, err := db.Exec(`UPDATE cards SET note_content_hash=?, cached_questions=?, cached_questions_timestamp=?
+		WHERE id=?`,
+		hash, questions, time.Now().Unix(), id)
+	return err
 }
 
 func readFile(path string) (string, error) {
