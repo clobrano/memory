@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/clobrano/memory/internal/cache"
 	"github.com/clobrano/memory/internal/config"
