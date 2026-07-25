@@ -42,42 +42,48 @@ func ExtractNoteContent(fullText string) string {
 		}
 	}
 
-	// If no title found, start from content start
+	// If no title found, return from content start
 	if titleStart == -1 {
-		titleStart = contentStart
+		return strings.TrimSpace(strings.Join(lines[contentStart:], "\n"))
 	}
 
-	// Skip tags after title (lines that start with # but aren't headings)
-	contentLinesStart := titleStart
-	if titleStart < len(lines) {
-		// Skip the title line itself
-		contentLinesStart = titleStart + 1
+	// Find where actual body content starts (skip title and all tag lines)
+	bodyStart := titleStart + 1
 
-		// Skip tag lines (lines that are just tags like "#tag1 #tag2")
-		for i := contentLinesStart; i < len(lines); i++ {
-			trimmed := strings.TrimSpace(lines[i])
-			if trimmed == "" {
-				// Skip blank lines
-				continue
-			}
-			// Check if line is all tags (starts with #, isn't a heading)
-			if strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "# ") {
-				// It's a tag line, skip it
-				continue
-			}
-			// Found first non-tag line
-			contentLinesStart = i
-			break
+	for i := bodyStart; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+
+		// Skip blank lines
+		if trimmed == "" {
+			continue
 		}
+
+		// Check if this line is a tag line
+		// Tags are lines that: start with # but NOT with "# " (which is heading)
+		// AND contain only tags (words starting with #)
+		if strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "# ") {
+			// This looks like a tag line, skip it
+			continue
+		}
+
+		// Found first non-tag, non-blank line - this is where body starts
+		bodyStart = i
+		break
 	}
 
-	// Rebuild content from title onwards
-	if titleStart >= 0 && titleStart < len(lines) {
-		result := strings.Join(lines[titleStart:], "\n")
-		return strings.TrimSpace(result)
+	// Rebuild content from title onwards (including title and body, but not tags)
+	result := make([]string, 0)
+	result = append(result, lines[titleStart])
+
+	// Add blank line after title if there is body content
+	if bodyStart < len(lines) && strings.TrimSpace(lines[bodyStart]) != "" {
+		result = append(result, "")
 	}
 
-	return strings.TrimSpace(strings.Join(lines[contentStart:], "\n"))
+	// Add all remaining lines as body
+	result = append(result, lines[bodyStart:]...)
+
+	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
 // ComputeNoteHash returns SHA256 hex of extracted content
