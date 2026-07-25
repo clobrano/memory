@@ -1,6 +1,6 @@
 module github.com/clobrano/memory
 
-go 1.23
+go 1.25.12
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/muesli/reflow v0.3.0
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/sync v0.21.0
+	golang.org/x/sync v0.22.0
 	modernc.org/sqlite v1.53.0
 )
 
