@@ -11,7 +11,6 @@ func ExtractNoteContent(fullText string) string {
 	lines := strings.Split(fullText, "\n")
 
 	// Skip YAML frontmatter
-	inFrontmatter := false
 	frontmatterCount := 0
 	contentStart := 0
 
@@ -22,8 +21,6 @@ func ExtractNoteContent(fullText string) string {
 				// Found end of frontmatter, start from next line
 				contentStart = i + 1
 				break
-			} else if frontmatterCount == 1 {
-				inFrontmatter = true
 			}
 		}
 	}
