@@ -50,6 +50,7 @@ type aiEvalResult struct {
 type aiNextQuestionsMsg struct {
 	questions   string
 	suggestions string
+	isCached    bool
 	err         error
 }
 
@@ -82,6 +83,7 @@ type Model struct {
 	// prefetching for next card
 	nextAiQuestions   string
 	nextAiSuggestions string
+	nextAiCached      bool
 	nextAiPrefetching bool
 
 	// quit confirmation
@@ -202,7 +204,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.nextAiPrefetching = true
 				nextCard := &m.cards[m.index+1]
 				nextContent, _ := readNoteContent(nextCard.Path)
-				return m, fetchAIQuestionsForNext(m.cfg.AI, nextContent)
+				return m, fetchAIQuestionsForNext(m.cfg.AI, nextContent, m.db, nextCard.ID)
 			}
 		}
 		return m, nil
@@ -212,6 +214,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.questions != "" {
 			m.nextAiQuestions = msg.questions
 			m.nextAiSuggestions = msg.suggestions
+			m.nextAiCached = msg.isCached
 		}
 		return m, nil
 
@@ -347,8 +350,16 @@ func (m Model) beginCardWithAI() (tea.Model, tea.Cmd) {
 	if m.nextAiQuestions != "" {
 		m.aiQuestions = m.nextAiQuestions
 		m.aiSuggestions = m.nextAiSuggestions
+		// AskQuestions only serves the cache on a hash match, so these are current.
+		m.noteContentChanged = false
+		if m.nextAiCached {
+			m.aiQuestionsSource = "cached"
+		} else {
+			m.aiQuestionsSource = "fresh"
+		}
 		m.nextAiQuestions = ""
 		m.nextAiSuggestions = ""
+		m.nextAiCached = false
 		m.nextAiPrefetching = false
 
 		w := m.width - 2
@@ -402,10 +413,10 @@ func fetchAIQuestions(cfg config.AIConfig, content string, dbConn *sql.DB, cardI
 	}
 }
 
-func fetchAIQuestionsForNext(cfg config.AIConfig, content string) tea.Cmd {
+func fetchAIQuestionsForNext(cfg config.AIConfig, content string, dbConn *sql.DB, cardID int64) tea.Cmd {
 	return func() tea.Msg {
-		q, s, _, _, err := ai.AskQuestions(cfg, content, nil, 0)
-		return aiNextQuestionsMsg{questions: q, suggestions: s, err: err}
+		q, s, isCached, _, err := ai.AskQuestions(cfg, content, dbConn, cardID)
+		return aiNextQuestionsMsg{questions: q, suggestions: s, isCached: isCached, err: err}
 	}
 }
 

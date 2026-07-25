@@ -124,10 +124,19 @@ func GetCardByID(db *sql.DB, id int64) (*Card, error) {
 	return scanCard(row)
 }
 
-func MergeCards(db *sql.DB, oldCard, newCard *Card) error {
-	// Combine reps and lapses
-	newReps := newCard.Reps + oldCard.Reps
-	newLapses := newCard.Lapses + oldCard.Lapses
+// MergeCardHistories folds oldCard's review history into newCard and removes
+// oldCard. It runs in a single transaction: a partial merge would otherwise
+// leave reviews pointing at a card that no longer exists, or double-count reps.
+func MergeCardHistories(db *sql.DB, oldCard, newCard Card) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`UPDATE review_history SET card_id=? WHERE card_id=?`, newCard.ID, oldCard.ID); err != nil {
+		return fmt.Errorf("move reviews: %w", err)
+	}
 
 	// Keep the older first_indexed date
 	firstIndexed := oldCard.FirstIndexed
@@ -135,10 +144,16 @@ func MergeCards(db *sql.DB, oldCard, newCard *Card) error {
 		firstIndexed = newCard.FirstIndexed
 	}
 
-	// Update newCard with merged data
-	_, err := db.Exec(`UPDATE cards SET first_indexed=?,reps=?,lapses=? WHERE id=?`,
-		firstIndexed, newReps, newLapses, newCard.ID)
-	return err
+	if _, err := tx.Exec(`UPDATE cards SET first_indexed=?,reps=?,lapses=? WHERE id=?`,
+		firstIndexed, newCard.Reps+oldCard.Reps, newCard.Lapses+oldCard.Lapses, newCard.ID); err != nil {
+		return fmt.Errorf("merge card data: %w", err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM cards WHERE id=?`, oldCard.ID); err != nil {
+		return fmt.Errorf("delete old card: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func ListAllCards(db *sql.DB) ([]Card, error) {
