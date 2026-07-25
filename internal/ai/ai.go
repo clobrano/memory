@@ -128,6 +128,22 @@ func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardI
 	return questions, suggestions, false, false, nil
 }
 
+// SetQuestions stores questions written by hand for a card. They are stamped
+// with the note's current hash, so the next review treats them as up to date
+// and serves them without calling the AI. Editing the note invalidates them the
+// same way it invalidates generated ones: with AI enabled the next review
+// regenerates and overwrites, without it they are shown with a stale warning.
+func SetQuestions(dbConn *sql.DB, cardID int64, noteContent, questions string) error {
+	if dbConn == nil || cardID <= 0 {
+		return fmt.Errorf("no card to store questions for")
+	}
+	questions = strings.TrimSpace(questions)
+	if questions == "" {
+		return fmt.Errorf("questions are empty")
+	}
+	return db.UpdateCachedQuestions(dbConn, cardID, cache.ComputeNoteHash(noteContent), questions)
+}
+
 // GetCachedQuestions retrieves cached questions if available
 // Returns: questions, suggestions, isCached, noteChanged, error
 func GetCachedQuestions(dbConn *sql.DB, cardID int64, noteContent string) (questions, suggestions string, isCached, noteChanged bool, err error) {
