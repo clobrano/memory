@@ -404,7 +404,7 @@ func fetchAIQuestions(cfg config.AIConfig, content string, dbConn *sql.DB, cardI
 
 func fetchAIQuestionsForNext(cfg config.AIConfig, content string) tea.Cmd {
 	return func() tea.Msg {
-		q, s, err := ai.AskQuestions(cfg, content)
+		q, s, _, _, err := ai.AskQuestions(cfg, content, nil, 0)
 		return aiNextQuestionsMsg{questions: q, suggestions: s, err: err}
 	}
 }
