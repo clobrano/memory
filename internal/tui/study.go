@@ -36,6 +36,8 @@ type gradeResult struct {
 type aiQuestionsMsg struct {
 	questions   string
 	suggestions string
+	isCached    bool
+	noteChanged bool
 	err         error
 }
 
@@ -69,11 +71,13 @@ type Model struct {
 	streak     int
 
 	// grading
-	reviewed      []gradeResult
-	aiQuestions   string
-	aiSuggestions string
-	aiEval        *aiEvalResult
-	aiLoading     bool
+	reviewed          []gradeResult
+	aiQuestions       string
+	aiSuggestions     string
+	aiQuestionsSource string // "fresh" or "cached"
+	noteContentChanged bool   // true if cached note differs from current
+	aiEval            *aiEvalResult
+	aiLoading         bool
 
 	// prefetching for next card
 	nextAiQuestions   string
@@ -159,6 +163,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.aiQuestions = msg.questions
 			m.aiSuggestions = msg.suggestions
+			m.noteContentChanged = msg.noteChanged
+			if msg.isCached {
+				m.aiQuestionsSource = "cached"
+			} else {
+				m.aiQuestionsSource = "fresh"
+			}
 			vpContent := wordwrap.String(msg.questions, w)
 			if msg.suggestions != "" {
 				vpContent += "\n\n" + hintStyle.Render("--- note suggestion ---\n"+wordwrap.String(msg.suggestions, w))
@@ -272,6 +282,51 @@ func (m Model) startSession() (tea.Model, tea.Cmd) {
 	if m.aiEnabled {
 		return m.beginCardWithAI()
 	}
+	// AI disabled: try to load cached questions if available
+	card := m.currentCard()
+	if card != nil {
+		content, _ := readNoteContent(card.Path)
+		return m.tryLoadCachedQuestions(content)
+	}
+	m.state = stateRecall
+	return m, nil
+}
+
+// tryLoadCachedQuestions attempts to load cached questions when AI is disabled
+func (m Model) tryLoadCachedQuestions(content string) (tea.Model, tea.Cmd) {
+	card := m.currentCard()
+	if card == nil {
+		m.state = stateRecall
+		return m, nil
+	}
+
+	q, s, isCached, noteChanged, err := ai.GetCachedQuestions(m.db, card.ID, content)
+	if err == nil && q != "" && isCached {
+		// Cached questions found
+		m.aiQuestions = q
+		m.aiSuggestions = s
+		m.noteContentChanged = noteChanged
+		m.aiQuestionsSource = "cached"
+		m.textarea.Reset()
+		m.state = stateAIQuestions
+
+		w := m.width - 2
+		if w < 20 {
+			w = 20
+		}
+		vpContent := wordwrap.String(q, w)
+		if s != "" {
+			vpContent += "\n\n" + hintStyle.Render("--- note suggestion ---\n"+wordwrap.String(s, w))
+		}
+		m.viewport.Height = m.aiQuestionsViewportHeight()
+		m.viewport.SetContent(vpContent)
+		m.viewport.GotoTop()
+		m.textarea.SetHeight(m.aiAnswerHeight())
+		m.textarea.Focus()
+		return m, nil
+	}
+
+	// No cached questions, fall back to recall mode
 	m.state = stateRecall
 	return m, nil
 }
@@ -342,8 +397,8 @@ func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func fetchAIQuestions(cfg config.AIConfig, content string, dbConn *sql.DB, cardID int64) tea.Cmd {
 	return func() tea.Msg {
-		q, s, err := ai.AskQuestions(cfg, content, dbConn, cardID)
-		return aiQuestionsMsg{questions: q, suggestions: s, err: err}
+		q, s, isCached, noteChanged, err := ai.AskQuestions(cfg, content, dbConn, cardID)
+		return aiQuestionsMsg{questions: q, suggestions: s, isCached: isCached, noteChanged: noteChanged, err: err}
 	}
 }
 
@@ -458,6 +513,12 @@ func (m Model) applyGrade(grade fsrs.Grade) (tea.Model, tea.Cmd) {
 	if m.aiEnabled {
 		return m.beginCardWithAI()
 	}
+	// AI disabled: try to load cached questions
+	card := m.currentCard()
+	if card != nil {
+		content, _ := readNoteContent(card.Path)
+		return m.tryLoadCachedQuestions(content)
+	}
 	m.state = stateRecall
 	m.clearCurrentQuestions()
 	return m, nil
@@ -472,6 +533,12 @@ func (m Model) skipCard() (tea.Model, tea.Cmd) {
 	if m.aiEnabled {
 		return m.beginCardWithAI()
 	}
+	// AI disabled: try to load cached questions
+	card := m.currentCard()
+	if card != nil {
+		content, _ := readNoteContent(card.Path)
+		return m.tryLoadCachedQuestions(content)
+	}
 	m.state = stateRecall
 	m.clearCurrentQuestions()
 	return m, nil
@@ -480,6 +547,8 @@ func (m Model) skipCard() (tea.Model, tea.Cmd) {
 func (m Model) clearCurrentQuestions() {
 	m.aiQuestions = ""
 	m.aiSuggestions = ""
+	m.aiQuestionsSource = ""
+	m.noteContentChanged = false
 	m.aiEval = nil
 }
 
@@ -556,7 +625,18 @@ func (m Model) viewAIQuestions() string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
+	titleStr := fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)
+	if m.aiQuestionsSource == "cached" {
+		titleStr += " [cached]"
+	} else if m.aiQuestionsSource == "fresh" {
+		titleStr += " [fresh]"
+	}
+	fmt.Fprintf(&b, "%s\n", hintStyle.Render(titleStr))
+
+	if m.noteContentChanged {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("⚠ Note has changed, possible outdated questions\n"))
+	}
+
 	if m.aiLoading {
 		b.WriteString(hintStyle.Render("  AI is generating questions..."))
 		return b.String()

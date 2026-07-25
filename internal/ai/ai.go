@@ -97,21 +97,30 @@ func invoke(cfg config.AIConfig, prompt string) (string, error) {
 
 // AskQuestions generates or retrieves cached questions for a note
 // If database and cardID are provided, it attempts to reuse cached questions if the note hasn't changed
-func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardID int64) (questions, suggestions string, err error) {
+// Returns: questions, suggestions, isCached, noteChanged, error
+func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardID int64) (questions, suggestions string, isCached, noteChanged bool, err error) {
 	// Compute hash of note content
 	currentHash := cache.ComputeNoteHash(noteContent)
+	isCached = false
+	noteChanged = false
 
 	// Check cache if database is provided
 	if dbConn != nil && cardID > 0 {
 		card, err := db.GetCardByID(dbConn, cardID)
-		if err == nil && card != nil && card.NoteContentHash == currentHash && card.CachedQuestions != "" {
-			// Cache hit: return cached questions
+		if err == nil && card != nil && card.CachedQuestions != "" {
+			// We have cached questions
+			isCached = true
+			// Check if note content changed
+			if card.NoteContentHash != currentHash {
+				noteChanged = true
+			}
+			// Return cached questions regardless
 			parts := strings.SplitN(card.CachedQuestions, "\n---\n", 2)
 			questions = strings.TrimSpace(parts[0])
 			if len(parts) > 1 {
 				suggestions = strings.TrimSpace(parts[1])
 			}
-			return questions, suggestions, nil
+			return questions, suggestions, isCached, noteChanged, nil
 		}
 	}
 
@@ -120,7 +129,7 @@ func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardI
 	prompt := strings.ReplaceAll(template, "{{NOTE_CONTENT}}", noteContent)
 	output, err := invoke(cfg, prompt)
 	if err != nil {
-		return "", "", err
+		return "", "", false, false, err
 	}
 
 	parts := strings.SplitN(output, "\n---\n", 2)
@@ -134,12 +143,40 @@ func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardI
 		_ = db.UpdateCachedQuestions(dbConn, cardID, currentHash, output)
 	}
 
-	return questions, suggestions, nil
+	return questions, suggestions, false, false, nil
+}
+
+// GetCachedQuestions retrieves cached questions if available
+// Returns: questions, suggestions, isCached, noteChanged, error
+func GetCachedQuestions(dbConn *sql.DB, cardID int64, noteContent string) (questions, suggestions string, isCached, noteChanged bool, err error) {
+	if dbConn == nil || cardID <= 0 {
+		return "", "", false, false, nil
+	}
+
+	currentHash := cache.ComputeNoteHash(noteContent)
+	card, err := db.GetCardByID(dbConn, cardID)
+	if err != nil || card == nil || card.CachedQuestions == "" {
+		return "", "", false, false, err
+	}
+
+	isCached = true
+	if card.NoteContentHash != currentHash {
+		noteChanged = true
+	}
+
+	parts := strings.SplitN(card.CachedQuestions, "\n---\n", 2)
+	questions = strings.TrimSpace(parts[0])
+	if len(parts) > 1 {
+		suggestions = strings.TrimSpace(parts[1])
+	}
+
+	return questions, suggestions, isCached, noteChanged, nil
 }
 
 // AskQuestionsNoCache generates questions without caching (for backward compatibility)
 func AskQuestionsNoCache(cfg config.AIConfig, noteContent string) (questions, suggestions string, err error) {
-	return AskQuestions(cfg, noteContent, nil, 0)
+	q, s, _, _, err := AskQuestions(cfg, noteContent, nil, 0)
+	return q, s, err
 }
 
 func Evaluate(cfg config.AIConfig, noteContent, qaTranscript string) (grade, rationale string, err error) {
