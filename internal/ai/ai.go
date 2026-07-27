@@ -2,6 +2,7 @@ package ai
 
 import (
 	"bytes"
+	"database/sql"
 	_ "embed"
 	"fmt"
 	"os"
@@ -9,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/clobrano/memory/internal/cache"
 	"github.com/clobrano/memory/internal/config"
+	"github.com/clobrano/memory/internal/db"
 )
 
 //go:embed prompts/questions.txt
@@ -91,19 +94,81 @@ func invoke(cfg config.AIConfig, prompt string) (string, error) {
 	return out.String(), nil
 }
 
-func AskQuestions(cfg config.AIConfig, noteContent string) (questions, suggestions string, err error) {
+// AskQuestions generates or retrieves cached questions for a note
+// If database and cardID are provided, it attempts to reuse cached questions if the note hasn't changed
+// Returns: questions, suggestions, isCached, noteChanged, error
+func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardID int64) (questions, suggestions string, isCached, noteChanged bool, err error) {
+	currentHash := cache.ComputeNoteHash(noteContent)
+
+	// Reuse cached questions only while the note content is unchanged; a changed
+	// note must be re-asked, otherwise the questions would describe stale content.
+	if dbConn != nil && cardID > 0 {
+		card, cacheErr := db.GetCardByID(dbConn, cardID)
+		if cacheErr == nil && card != nil && card.CachedQuestions != "" && card.NoteContentHash == currentHash {
+			questions, suggestions = splitQuestions(card.CachedQuestions)
+			return questions, suggestions, true, false, nil
+		}
+	}
+
+	// Cache miss: generate new questions
 	template := loadPrompt(cfg.QuestionPromptFile, defaultQuestionsPrompt)
 	prompt := strings.ReplaceAll(template, "{{NOTE_CONTENT}}", noteContent)
 	output, err := invoke(cfg, prompt)
 	if err != nil {
-		return "", "", err
+		return "", "", false, false, err
 	}
-	parts := strings.SplitN(output, "\n---\n", 2)
+
+	questions, suggestions = splitQuestions(output)
+
+	// Store in cache if database is provided
+	if dbConn != nil && cardID > 0 {
+		_ = db.UpdateCachedQuestions(dbConn, cardID, currentHash, output)
+	}
+
+	return questions, suggestions, false, false, nil
+}
+
+// SetQuestions stores questions written by hand for a card. They are stamped
+// with the note's current hash, so the next review treats them as up to date
+// and serves them without calling the AI. Editing the note invalidates them the
+// same way it invalidates generated ones: with AI enabled the next review
+// regenerates and overwrites, without it they are shown with a stale warning.
+func SetQuestions(dbConn *sql.DB, cardID int64, noteContent, questions string) error {
+	if dbConn == nil || cardID <= 0 {
+		return fmt.Errorf("no card to store questions for")
+	}
+	questions = strings.TrimSpace(questions)
+	if questions == "" {
+		return fmt.Errorf("questions are empty")
+	}
+	return db.UpdateCachedQuestions(dbConn, cardID, cache.ComputeNoteHash(noteContent), questions)
+}
+
+// GetCachedQuestions retrieves cached questions if available
+// Returns: questions, suggestions, isCached, noteChanged, error
+func GetCachedQuestions(dbConn *sql.DB, cardID int64, noteContent string) (questions, suggestions string, isCached, noteChanged bool, err error) {
+	if dbConn == nil || cardID <= 0 {
+		return "", "", false, false, nil
+	}
+
+	currentHash := cache.ComputeNoteHash(noteContent)
+	card, err := db.GetCardByID(dbConn, cardID)
+	if err != nil || card == nil || card.CachedQuestions == "" {
+		return "", "", false, false, err
+	}
+
+	questions, suggestions = splitQuestions(card.CachedQuestions)
+	return questions, suggestions, true, card.NoteContentHash != currentHash, nil
+}
+
+// splitQuestions separates the questions block from the trailing note suggestion.
+func splitQuestions(raw string) (questions, suggestions string) {
+	parts := strings.SplitN(raw, "\n---\n", 2)
 	questions = strings.TrimSpace(parts[0])
 	if len(parts) > 1 {
 		suggestions = strings.TrimSpace(parts[1])
 	}
-	return questions, suggestions, nil
+	return questions, suggestions
 }
 
 func Evaluate(cfg config.AIConfig, noteContent, qaTranscript string) (grade, rationale string, err error) {

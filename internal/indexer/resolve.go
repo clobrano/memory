@@ -68,29 +68,10 @@ func remapWithConflictHandling(database *sql.DB, reader *bufio.Reader, oldCard d
 	}
 
 	// Merge the histories
-	if err := mergeCardHistories(database, oldCard, *existingCard); err != nil {
+	if err := db.MergeCardHistories(database, oldCard, *existingCard); err != nil {
 		return fmt.Errorf("merge histories: %w", err)
 	}
 
 	fmt.Printf("Histories merged. The study material at '%s' now has combined review history.\n", newPath)
-	return nil
-}
-
-func mergeCardHistories(database *sql.DB, oldCard, newCard db.Card) error {
-	// Move all reviews from oldCard to newCard
-	if err := db.UpdateReviewCardID(database, oldCard.ID, newCard.ID); err != nil {
-		return fmt.Errorf("move reviews: %w", err)
-	}
-
-	// Merge card data (combine reps, lapses, keep older first_indexed)
-	if err := db.MergeCards(database, &oldCard, &newCard); err != nil {
-		return fmt.Errorf("merge card data: %w", err)
-	}
-
-	// Delete the old card record
-	if err := db.DeleteCard(database, oldCard.ID); err != nil {
-		return fmt.Errorf("delete old card: %w", err)
-	}
-
 	return nil
 }
