@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -84,17 +85,99 @@ before, including questions the AI generated.`,
 			}
 		}
 
-		content, err := os.ReadFile(card.Path)
+		return storeQuestions(card, string(raw))
+	},
+}
+
+var questionsEditCmd = &cobra.Command{
+	Use:   "edit <note>",
+	Short: "Edit the questions for a note in your editor",
+	Long: `Edit the questions for a note in $VISUAL, or $EDITOR, falling back to vi.
+
+The editor opens on whatever is stored today, so an existing set can be
+adjusted instead of retyped. Saving stamps the questions with the note's
+current content; leaving the buffer unchanged, or empty, stores nothing.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		card, err := resolveCard(args[0])
 		if err != nil {
-			return fmt.Errorf("read %s: %w", card.Path, err)
-		}
-		if err := ai.SetQuestions(DB, card.ID, string(content), string(raw)); err != nil {
 			return err
 		}
 
-		fmt.Printf("Stored questions for %q.\n", card.Title)
-		return nil
+		// Edit the stored text as-is, so an AI note suggestion below the "---"
+		// separator survives a round trip through the editor.
+		before := card.CachedQuestions
+		after, err := editInEditor(before)
+		if err != nil {
+			return err
+		}
+
+		switch {
+		case strings.TrimSpace(after) == "":
+			fmt.Println("No questions written, nothing stored.")
+			return nil
+		case strings.TrimSpace(after) == strings.TrimSpace(before):
+			// Storing would re-stamp the note hash, silently clearing any
+			// outdated-note warning without the questions having been touched.
+			fmt.Println("Questions unchanged, nothing stored.")
+			return nil
+		}
+		return storeQuestions(card, after)
 	},
+}
+
+// editInEditor round-trips text through the user's editor.
+func editInEditor(content string) (string, error) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+
+	f, err := os.CreateTemp("", "memory-questions-*.md")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	path := f.Name()
+	defer os.Remove(path)
+
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return "", fmt.Errorf("write temp file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("close temp file: %w", err)
+	}
+
+	// Run through a shell so an editor setting that carries arguments keeps
+	// working, such as EDITOR="code --wait".
+	editorCmd := exec.Command("sh", "-c", editor+` "`+path+`"`)
+	editorCmd.Stdin, editorCmd.Stdout, editorCmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := editorCmd.Run(); err != nil {
+		return "", fmt.Errorf("editor %q: %w", editor, err)
+	}
+
+	edited, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read back questions: %w", err)
+	}
+	return string(edited), nil
+}
+
+// storeQuestions writes questions for a card, stamped with the note as it
+// stands right now.
+func storeQuestions(card *db.Card, questions string) error {
+	content, err := os.ReadFile(card.Path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", card.Path, err)
+	}
+	if err := ai.SetQuestions(DB, card.ID, string(content), questions); err != nil {
+		return err
+	}
+	fmt.Printf("Stored questions for %q.\n", card.Title)
+	return nil
 }
 
 // resolveCard finds the tracked note an argument refers to, accepting either a
@@ -138,5 +221,6 @@ func init() {
 		"read questions from a file instead of stdin")
 	questionsCmd.AddCommand(questionsShowCmd)
 	questionsCmd.AddCommand(questionsSetCmd)
+	questionsCmd.AddCommand(questionsEditCmd)
 	rootCmd.AddCommand(questionsCmd)
 }
