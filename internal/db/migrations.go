@@ -53,6 +53,19 @@ var migrations = []migration{
 		name: "005_cache_questions_timestamp",
 		sql:  `ALTER TABLE cards ADD COLUMN cached_questions_timestamp INTEGER`,
 	},
+	// 006 and 007 bring next_due onto the day-only form GetDueCards compares
+	// against. Rows written before this were full timestamps, which sort after
+	// the bare date they fall on, so every card stayed hidden for a day longer
+	// than it was scheduled for.
+	{
+		name: "006_next_due_zero_to_empty",
+		sql:  `UPDATE cards SET next_due = '' WHERE next_due LIKE '0001-01-01%'`,
+	},
+	{
+		name: "007_next_due_day_only",
+		sql: `UPDATE cards SET next_due = substr(next_due, 1, 10)
+			WHERE next_due IS NOT NULL AND length(next_due) > 10`,
+	},
 }
 
 func RunMigrations(db *sql.DB) error {

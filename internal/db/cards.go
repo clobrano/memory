@@ -28,6 +28,18 @@ type Card struct {
 	CachedQuestionsTimestamp int64
 }
 
+// dueDay renders the calendar day a card falls due. next_due is compared
+// against a date string, so storing the day alone keeps the comparison exact:
+// a timestamp carrying a clock time always sorts after the bare date and would
+// hide the card for a further day. The scheduler's minimum interval is one day,
+// so a card can never come back on the day it was reviewed.
+func dueDay(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format("2006-01-02")
+}
+
 func UpsertCard(db *sql.DB, c Card) (int64, error) {
 	res, err := db.Exec(`
 		INSERT INTO cards(path,title,tag,first_indexed,stability,difficulty,
@@ -38,7 +50,7 @@ func UpsertCard(db *sql.DB, c Card) (int64, error) {
 		  tag=excluded.tag
 	`, c.Path, c.Title, c.Tag, c.FirstIndexed, c.Stability, c.Difficulty,
 		c.ElapsedDays, c.ScheduledDays, c.Reps, c.Lapses, c.State,
-		c.LastReview, c.NextDue)
+		c.LastReview, dueDay(c.NextDue))
 	if err != nil {
 		return 0, err
 	}
@@ -53,6 +65,12 @@ func GetCardByPath(db *sql.DB, path string) (*Card, error) {
 	return scanCard(row)
 }
 
+// GetDueCards returns every card that has fallen due, cards already in
+// circulation first and the most overdue among them ahead of the rest, then
+// never-seen notes newest first. Sessions are truncated to the daily limit, so
+// ordering decides what gets studied: keying the split on state rather than
+// reps keeps a lapsed card (whose reps the scheduler resets to 0) with the
+// reviews instead of queueing it behind every unread note in the vault.
 func GetDueCards(db *sql.DB, keywords []string) ([]Card, error) {
 	now := time.Now().Format("2006-01-02")
 	query := `SELECT id,path,title,tag,first_indexed,stability,difficulty,
@@ -60,9 +78,9 @@ func GetDueCards(db *sql.DB, keywords []string) ([]Card, error) {
 		note_content_hash,cached_questions,cached_questions_timestamp
 		FROM cards WHERE (next_due <= ? OR next_due IS NULL OR next_due = '')
 		ORDER BY
-		  CASE WHEN reps = 0 THEN 0 ELSE 1 END ASC,
-		  CASE WHEN reps = 0 THEN first_indexed END DESC,
-		  next_due ASC`
+		  CASE WHEN state IS NULL OR state = '' THEN 1 ELSE 0 END ASC,
+		  next_due ASC,
+		  first_indexed DESC`
 	rows, err := db.Query(query, now)
 	if err != nil {
 		return nil, err
@@ -102,7 +120,7 @@ func UpdateCardSchedule(db *sql.DB, c Card) error {
 		scheduled_days=?,reps=?,lapses=?,state=?,last_review=?,next_due=?
 		WHERE id=?`,
 		c.Stability, c.Difficulty, c.ElapsedDays, c.ScheduledDays,
-		c.Reps, c.Lapses, c.State, c.LastReview, c.NextDue, c.ID)
+		c.Reps, c.Lapses, c.State, c.LastReview, dueDay(c.NextDue), c.ID)
 	return err
 }
 

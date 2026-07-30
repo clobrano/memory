@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -207,6 +208,219 @@ func TestMergeCardHistories(t *testing.T) {
 	if _, err := GetCardByID(db, staleID); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("GetCardByID(stale) error = %v, want sql.ErrNoRows", err)
 	}
+}
+
+// A card scheduled for tomorrow must not be offered today: the scheduler's
+// minimum interval is one day, and a note may never come back on the day it
+// was reviewed.
+func TestCardScheduledForTomorrowIsNotDueToday(t *testing.T) {
+	database := openTestDBFile(t)
+
+	c := Card{
+		Path: "/notes/tomorrow.md", Title: "Tomorrow", Tag: "#study",
+		FirstIndexed: time.Now(), LastReview: time.Now(),
+		NextDue: time.Now().AddDate(0, 0, 1), Reps: 1, State: "review",
+	}
+	if _, err := UpsertCard(database, c); err != nil {
+		t.Fatalf("UpsertCard: %v", err)
+	}
+
+	cards, err := GetDueCards(database, nil)
+	if err != nil {
+		t.Fatalf("GetDueCards: %v", err)
+	}
+	if len(cards) != 0 {
+		t.Errorf("got %d due cards, want 0 — a card due tomorrow was offered today", len(cards))
+	}
+}
+
+// The card falls due today at some clock time. Stored as a full timestamp it
+// sorted after today's date and stayed hidden until tomorrow, adding a day to
+// every interval in the app.
+func TestCardDueTodayIsOfferedToday(t *testing.T) {
+	database := openTestDBFile(t)
+
+	c := Card{
+		Path: "/notes/today.md", Title: "Today", Tag: "#study",
+		FirstIndexed: time.Now().AddDate(0, 0, -1),
+		LastReview:   time.Now().AddDate(0, 0, -1),
+		NextDue:      time.Now(), Reps: 1, State: "review",
+	}
+	if _, err := UpsertCard(database, c); err != nil {
+		t.Fatalf("UpsertCard: %v", err)
+	}
+
+	cards, err := GetDueCards(database, nil)
+	if err != nil {
+		t.Fatalf("GetDueCards: %v", err)
+	}
+	if len(cards) != 1 {
+		t.Fatalf("got %d due cards, want 1 — a card due today was not offered", len(cards))
+	}
+}
+
+func TestNextDueStoredAsDayOnly(t *testing.T) {
+	database := openTestDBFile(t)
+
+	id, err := UpsertCard(database, Card{
+		Path: "/notes/day.md", Title: "Day", Tag: "#study", FirstIndexed: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("UpsertCard: %v", err)
+	}
+
+	// A new note carries no due date at all, and must read back as unscheduled
+	// rather than as the zero time formatted into the column.
+	var raw sql.NullString
+	if err := database.QueryRow(`SELECT next_due FROM cards WHERE id=?`, id).Scan(&raw); err != nil {
+		t.Fatalf("read next_due: %v", err)
+	}
+	if raw.String != "" {
+		t.Errorf("next_due for an unscheduled card = %q, want empty", raw.String)
+	}
+
+	card, err := GetCardByID(database, id)
+	if err != nil {
+		t.Fatalf("GetCardByID: %v", err)
+	}
+	card.NextDue = time.Now().AddDate(0, 0, 6)
+	card.Reps, card.State = 2, "review"
+	if err := UpdateCardSchedule(database, *card); err != nil {
+		t.Fatalf("UpdateCardSchedule: %v", err)
+	}
+
+	if err := database.QueryRow(`SELECT next_due FROM cards WHERE id=?`, id).Scan(&raw); err != nil {
+		t.Fatalf("read next_due after schedule: %v", err)
+	}
+	want := time.Now().AddDate(0, 0, 6).Format("2006-01-02")
+	if raw.String != want {
+		t.Errorf("stored next_due = %q, want %q", raw.String, want)
+	}
+
+	round, err := GetCardByID(database, id)
+	if err != nil {
+		t.Fatalf("GetCardByID after schedule: %v", err)
+	}
+	if got := round.NextDue.Format("2006-01-02"); got != want {
+		t.Errorf("NextDue read back as %q, want %q", got, want)
+	}
+}
+
+// Sessions are capped at the daily limit, so cards already in circulation have
+// to come first — otherwise a vault full of unread notes starves the reviews
+// that would graduate to a longer interval.
+func TestGetDueCardsPrioritizesReviewsOverNewNotes(t *testing.T) {
+	database := openTestDBFile(t)
+
+	now := time.Now()
+	for _, c := range []Card{
+		{Path: "/notes/new-older.md", Title: "New older", Tag: "#study",
+			FirstIndexed: now.AddDate(0, 0, -3)},
+		{Path: "/notes/new-newer.md", Title: "New newer", Tag: "#study",
+			FirstIndexed: now.AddDate(0, 0, -1)},
+		// Lapsed: the scheduler resets reps to 0, but the card has been seen.
+		{Path: "/notes/lapsed.md", Title: "Lapsed", Tag: "#study",
+			FirstIndexed: now.AddDate(0, 0, -10), LastReview: now.AddDate(0, 0, -1),
+			NextDue: now, Reps: 0, Lapses: 1, State: "learning"},
+		{Path: "/notes/overdue.md", Title: "Overdue", Tag: "#study",
+			FirstIndexed: now.AddDate(0, 0, -20), LastReview: now.AddDate(0, 0, -8),
+			NextDue: now.AddDate(0, 0, -5), Reps: 3, State: "review"},
+	} {
+		if _, err := UpsertCard(database, c); err != nil {
+			t.Fatalf("UpsertCard %s: %v", c.Path, err)
+		}
+	}
+
+	cards, err := GetDueCards(database, nil)
+	if err != nil {
+		t.Fatalf("GetDueCards: %v", err)
+	}
+
+	var got []string
+	for _, c := range cards {
+		got = append(got, c.Path)
+	}
+	want := []string{
+		"/notes/overdue.md",   // seen, most overdue
+		"/notes/lapsed.md",    // seen, due today
+		"/notes/new-newer.md", // unseen, newest first
+		"/notes/new-older.md",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d = %s, want %s (full order %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestMigrationNormalizesLegacyNextDue(t *testing.T) {
+	database := openTestDBFile(t)
+
+	// Rows as written before day-only storage: Go's time.Time.String() format
+	// for a card due today, and the zero time for a card never scheduled.
+	insert := `INSERT INTO cards(path,title,tag,first_indexed,stability,difficulty,
+		elapsed_days,scheduled_days,reps,lapses,state,last_review,next_due)
+		VALUES(?,?,'#study','2026-07-01 09:00:00.1 +0200 CEST',2.15,2,1,1,?,1,?,'',?)`
+	today := time.Now().Format("2006-01-02")
+	if _, err := database.Exec(insert, "/notes/legacy.md", "Legacy", 1, "review",
+		today+" 11:45:41.976585154 +0200 CEST"); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if _, err := database.Exec(insert, "/notes/unscheduled.md", "Unscheduled", 0, "",
+		"0001-01-01 00:00:00 +0000 UTC"); err != nil {
+		t.Fatalf("insert zero-time row: %v", err)
+	}
+
+	// Replay the normalising migrations over the rows written above.
+	if _, err := database.Exec(
+		`DELETE FROM migrations WHERE name IN ('006_next_due_zero_to_empty','007_next_due_day_only')`); err != nil {
+		t.Fatalf("reset migration records: %v", err)
+	}
+	if err := RunMigrations(database); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+
+	for _, tc := range []struct{ path, want string }{
+		{"/notes/legacy.md", today},
+		{"/notes/unscheduled.md", ""},
+	} {
+		var got sql.NullString
+		if err := database.QueryRow(`SELECT next_due FROM cards WHERE path=?`, tc.path).Scan(&got); err != nil {
+			t.Fatalf("read next_due for %s: %v", tc.path, err)
+		}
+		if got.String != tc.want {
+			t.Errorf("next_due for %s = %q, want %q", tc.path, got.String, tc.want)
+		}
+	}
+
+	// Both are due now: the legacy card falls due today, the unscheduled one
+	// has never been seen.
+	cards, err := GetDueCards(database, nil)
+	if err != nil {
+		t.Fatalf("GetDueCards: %v", err)
+	}
+	if len(cards) != 2 {
+		t.Fatalf("got %d due cards, want 2", len(cards))
+	}
+	if cards[0].Path != "/notes/legacy.md" {
+		t.Errorf("first due card = %s, want the seen card /notes/legacy.md", cards[0].Path)
+	}
+}
+
+func openTestDBFile(t *testing.T) *sql.DB {
+	t.Helper()
+	database, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := RunMigrations(database); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	return database
 }
 
 func rawFirstIndexed(t *testing.T, db *sql.DB, id int64) string {
