@@ -269,15 +269,9 @@ func TestNextDueStoredAsDayOnly(t *testing.T) {
 		t.Fatalf("UpsertCard: %v", err)
 	}
 
-	// A new note carries no due date at all, and must read back as unscheduled
+	// A new note carries no due date at all, and must be stored as unscheduled
 	// rather than as the zero time formatted into the column.
-	var raw sql.NullString
-	if err := database.QueryRow(`SELECT next_due FROM cards WHERE id=?`, id).Scan(&raw); err != nil {
-		t.Fatalf("read next_due: %v", err)
-	}
-	if raw.String != "" {
-		t.Errorf("next_due for an unscheduled card = %q, want empty", raw.String)
-	}
+	assertStoredNextDue(t, database, "/notes/day.md", "")
 
 	card, err := GetCardByID(database, id)
 	if err != nil {
@@ -289,13 +283,8 @@ func TestNextDueStoredAsDayOnly(t *testing.T) {
 		t.Fatalf("UpdateCardSchedule: %v", err)
 	}
 
-	if err := database.QueryRow(`SELECT next_due FROM cards WHERE id=?`, id).Scan(&raw); err != nil {
-		t.Fatalf("read next_due after schedule: %v", err)
-	}
 	want := time.Now().AddDate(0, 0, 6).Format("2006-01-02")
-	if raw.String != want {
-		t.Errorf("stored next_due = %q, want %q", raw.String, want)
-	}
+	assertStoredNextDue(t, database, "/notes/day.md", want)
 
 	round, err := GetCardByID(database, id)
 	if err != nil {
@@ -383,18 +372,8 @@ func TestMigrationNormalizesLegacyNextDue(t *testing.T) {
 		t.Fatalf("RunMigrations: %v", err)
 	}
 
-	for _, tc := range []struct{ path, want string }{
-		{"/notes/legacy.md", today},
-		{"/notes/unscheduled.md", ""},
-	} {
-		var got sql.NullString
-		if err := database.QueryRow(`SELECT next_due FROM cards WHERE path=?`, tc.path).Scan(&got); err != nil {
-			t.Fatalf("read next_due for %s: %v", tc.path, err)
-		}
-		if got.String != tc.want {
-			t.Errorf("next_due for %s = %q, want %q", tc.path, got.String, tc.want)
-		}
-	}
+	assertStoredNextDue(t, database, "/notes/legacy.md", today)
+	assertStoredNextDue(t, database, "/notes/unscheduled.md", "")
 
 	// Both are due now: the legacy card falls due today, the unscheduled one
 	// has never been seen.
@@ -407,6 +386,27 @@ func TestMigrationNormalizesLegacyNextDue(t *testing.T) {
 	}
 	if cards[0].Path != "/notes/legacy.md" {
 		t.Errorf("first due card = %s, want the seen card /notes/legacy.md", cards[0].Path)
+	}
+}
+
+// assertStoredNextDue checks the text actually held in the column. The driver
+// re-parses columns declared DATETIME into time.Time, which database/sql then
+// renders as RFC3339 when scanned into a string, so a Go-side comparison would
+// describe the read path rather than the stored value. Comparing and measuring
+// inside SQLite sidesteps that: length is the decisive part, since a day-only
+// value is 10 characters where any timestamp form is longer.
+func assertStoredNextDue(t *testing.T, db *sql.DB, path, want string) {
+	t.Helper()
+	var matches bool
+	var length int
+	var rendered string
+	if err := db.QueryRow(`SELECT next_due = ?, length(next_due), CAST(next_due AS TEXT)
+		FROM cards WHERE path=?`, want, path).Scan(&matches, &length, &rendered); err != nil {
+		t.Fatalf("read next_due for %s: %v", path, err)
+	}
+	if !matches || length != len(want) {
+		t.Errorf("stored next_due for %s = %q (length %d), want %q (length %d)",
+			path, rendered, length, want, len(want))
 	}
 }
 
