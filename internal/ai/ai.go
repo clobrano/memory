@@ -81,7 +81,13 @@ func loadPrompt(path, fallback string) string {
 	return string(b)
 }
 
+// invoke runs the configured AI binary with the prompt on stdin. Failures name
+// the binary and carry its stderr, because that text is what the session shows
+// the user when it asks whether to carry on without AI.
 func invoke(cfg config.AIConfig, prompt string) (string, error) {
+	if cfg.Binary == "" {
+		return "", fmt.Errorf("no AI binary configured (set ai.binary in the config)")
+	}
 	cmd := exec.Command(cfg.Binary, cfg.Args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	var out bytes.Buffer
@@ -89,7 +95,10 @@ func invoke(cfg config.AIConfig, prompt string) (string, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%w: %s", err, errBuf.String())
+		if stderr := strings.TrimSpace(errBuf.String()); stderr != "" {
+			return "", fmt.Errorf("%s: %w: %s", cfg.Binary, err, stderr)
+		}
+		return "", fmt.Errorf("%s: %w", cfg.Binary, err)
 	}
 	return out.String(), nil
 }
@@ -119,6 +128,12 @@ func AskQuestions(cfg config.AIConfig, noteContent string, dbConn *sql.DB, cardI
 	}
 
 	questions, suggestions = splitQuestions(output)
+	// A binary that exits cleanly with nothing to show is as much a failure as
+	// one that exits non-zero: report it rather than hand back empty questions
+	// the caller would have to diagnose on its own.
+	if questions == "" {
+		return "", "", false, false, fmt.Errorf("%s returned no questions", cfg.Binary)
+	}
 
 	// Store in cache if database is provided
 	if dbConn != nil && cardID > 0 {
