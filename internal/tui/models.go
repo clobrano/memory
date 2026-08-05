@@ -8,9 +8,10 @@ import (
 type sessionState int
 
 const (
-	statePreSession    sessionState = iota
+	statePreSession sessionState = iota
 	stateRecall
 	stateAIQuestions // AI mode only: show questions, collect answers
+	stateAIError     // AI mode only: an AI call failed, the user chooses what to do
 	stateReveal
 	stateGrading
 	stateSessionSummary

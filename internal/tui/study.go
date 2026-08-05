@@ -54,6 +54,21 @@ type aiNextQuestionsMsg struct {
 	err         error
 }
 
+// What the AI was asked to do when it failed, used to phrase the report and to
+// pick up where the session left off if the user carries on without it.
+const (
+	phaseQuestions = "generate questions"
+	phaseEvaluate  = "evaluate your answers"
+)
+
+// aiFailure is an AI call that came back without a usable result. The session
+// stops on it and shows it, rather than quietly dropping to no-AI mode: a
+// silent fallback leaves the user wondering why the questions disappeared.
+type aiFailure struct {
+	phase string
+	err   error
+}
+
 type Model struct {
 	db         *sql.DB
 	cfg        *config.Config
@@ -79,6 +94,11 @@ type Model struct {
 	noteContentChanged bool   // true if cached note differs from current
 	aiEval             *aiEvalResult
 	aiLoading          bool
+
+	// AI failures: aiErr is the one being reported, heldErr one that arrived
+	// while the user was reading the note and is reported when they move on.
+	aiErr   *aiFailure
+	heldErr *aiFailure
 
 	// prefetching for next card
 	nextAiQuestions   string
@@ -148,70 +168,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case aiQuestionsMsg:
 		m.aiLoading = false
-		if msg.err != nil || msg.questions == "" {
-			// AI is unavailable for the rest of the session, so fall back to the
-			// stored questions exactly as a disabled-AI session would. Only when
-			// the card has none is there nothing to ask, and we reveal the note.
-			m.aiEnabled = false
-			card := m.currentCard()
-			if card != nil {
-				content, _ := readNoteContent(card.Path)
-				var loaded bool
-				if m, loaded = m.loadStoredQuestions(content); loaded {
-					return m, nil
-				}
-				m.viewport.Height = m.viewportHeightForReveal()
-				m.viewport.SetContent(renderMarkdown(content))
-			}
-			m.state = stateReveal
-		} else {
-			w := m.width - 2
-			if w < 20 {
-				w = 20
-			}
-			m.aiQuestions = msg.questions
-			m.aiSuggestions = msg.suggestions
-			m.noteContentChanged = msg.noteChanged
-			if msg.isCached {
-				m.aiQuestionsSource = "cached"
-			} else {
-				m.aiQuestionsSource = "fresh"
-			}
-			vpContent := wordwrap.String(msg.questions, w)
-			if msg.suggestions != "" {
-				vpContent += "\n\n" + hintStyle.Render("--- note suggestion ---\n"+wordwrap.String(msg.suggestions, w))
-			}
-			m.viewport.Height = m.aiQuestionsViewportHeight()
-			m.viewport.SetContent(vpContent)
-			m.viewport.GotoTop()
-			m.textarea.SetHeight(m.aiAnswerHeight())
-			m.textarea.Focus()
+		if err := questionsFailure(msg); err != nil {
+			// Nothing is on screen but the "generating questions" notice, so
+			// report the failure right away and let the user decide.
+			return m.reportAIFailure(phaseQuestions, err)
 		}
+		w := m.width - 2
+		if w < 20 {
+			w = 20
+		}
+		m.aiQuestions = msg.questions
+		m.aiSuggestions = msg.suggestions
+		m.noteContentChanged = msg.noteChanged
+		if msg.isCached {
+			m.aiQuestionsSource = "cached"
+		} else {
+			m.aiQuestionsSource = "fresh"
+		}
+		vpContent := wordwrap.String(msg.questions, w)
+		if msg.suggestions != "" {
+			vpContent += "\n\n" + hintStyle.Render("--- note suggestion ---\n"+wordwrap.String(msg.suggestions, w))
+		}
+		m.viewport.Height = m.aiQuestionsViewportHeight()
+		m.viewport.SetContent(vpContent)
+		m.viewport.GotoTop()
+		m.textarea.SetHeight(m.aiAnswerHeight())
+		m.textarea.Focus()
 		return m, nil
 
 	case aiEvalResult:
 		m.aiLoading = false
-		m.aiEval = &msg
 		if msg.err != nil {
-			m.aiEnabled = false
-		} else {
-			w := m.width - 2
-			if w < 20 {
-				w = 20
+			m.aiEval = nil
+			// The evaluation runs in the background while the note is on
+			// screen. Interrupting that reading to report the failure would
+			// steal the note away, so hold it until the user asks to be graded.
+			if m.state == stateReveal {
+				m.heldErr = &aiFailure{phase: phaseEvaluate, err: msg.err}
+				return m, nil
 			}
-			content := boldStyle.Render("Suggested: "+msg.grade) + "\n\n" +
-				wordwrap.String(msg.rationale, w)
-			m.evalVP.Height = m.viewportHeightForGrading()
-			m.evalVP.SetContent(content)
-			m.evalVP.GotoTop()
+			return m.reportAIFailure(phaseEvaluate, msg.err)
+		}
+		m.aiEval = &msg
+		w := m.width - 2
+		if w < 20 {
+			w = 20
+		}
+		content := boldStyle.Render("Suggested: "+msg.grade) + "\n\n" +
+			wordwrap.String(msg.rationale, w)
+		m.evalVP.Height = m.viewportHeightForGrading()
+		m.evalVP.SetContent(content)
+		m.evalVP.GotoTop()
 
-			// Prefetch questions for the next card while user reviews the grade
-			if m.aiEnabled && m.index+1 < len(m.cards) && !m.nextAiPrefetching {
-				m.nextAiPrefetching = true
-				nextCard := &m.cards[m.index+1]
-				nextContent, _ := readNoteContent(nextCard.Path)
-				return m, fetchAIQuestionsForNext(m.cfg.AI, nextContent, m.db, nextCard.ID)
-			}
+		// Prefetch questions for the next card while user reviews the grade
+		if m.aiEnabled && m.index+1 < len(m.cards) && !m.nextAiPrefetching {
+			m.nextAiPrefetching = true
+			nextCard := &m.cards[m.index+1]
+			nextContent, _ := readNoteContent(nextCard.Path)
+			return m, fetchAIQuestionsForNext(m.cfg.AI, nextContent, m.db, nextCard.ID)
 		}
 		return m, nil
 
@@ -245,6 +259,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateRecall(msg)
 		case stateAIQuestions:
 			return m.updateAIQuestions(msg)
+		case stateAIError:
+			return m.updateAIError(msg)
 		case stateReveal:
 			return m.updateReveal(msg)
 		case stateGrading:
@@ -402,6 +418,72 @@ func (m Model) beginCardWithAI() (tea.Model, tea.Cmd) {
 	return m, fetchAIQuestions(m.cfg.AI, content, m.db, card.ID)
 }
 
+// questionsFailure reports why a questions message is unusable, or nil when it
+// carries questions. An AI that exits cleanly with nothing to ask has failed
+// just as surely as one that errors out, and the user deserves to hear so.
+func questionsFailure(msg aiQuestionsMsg) error {
+	if msg.err != nil {
+		return msg.err
+	}
+	if strings.TrimSpace(msg.questions) == "" {
+		return fmt.Errorf("the AI returned no questions")
+	}
+	return nil
+}
+
+// reportAIFailure hands the session over to the user: the AI is left enabled
+// and nothing is skipped until they choose to continue without it or to stop.
+func (m Model) reportAIFailure(phase string, err error) (tea.Model, tea.Cmd) {
+	m.aiLoading = false
+	m.heldErr = nil
+	m.aiErr = &aiFailure{phase: phase, err: err}
+	m.state = stateAIError
+	return m, nil
+}
+
+func (m Model) updateAIError(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Continue):
+		return m.continueWithoutAI()
+	case key.Matches(msg, keys.Quit), msg.String() == "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// continueWithoutAI drops AI for the rest of the session and picks the card up
+// where the failure interrupted it: a failed question generation falls back to
+// the stored questions, or to the note itself, exactly as a session started
+// without AI would; a failed evaluation falls back to grading by hand.
+func (m Model) continueWithoutAI() (tea.Model, tea.Cmd) {
+	failed := m.aiErr
+	m.aiErr = nil
+	m.heldErr = nil
+	m.aiEnabled = false
+	m.aiEval = nil
+
+	if failed != nil && failed.phase == phaseEvaluate {
+		m.state = stateGrading
+		return m, nil
+	}
+
+	card := m.currentCard()
+	if card == nil {
+		m.state = stateSessionSummary
+		return m, nil
+	}
+	content, _ := readNoteContent(card.Path)
+	var loaded bool
+	if m, loaded = m.loadStoredQuestions(content); loaded {
+		return m, nil
+	}
+	m.viewport.Height = m.viewportHeightForReveal()
+	m.viewport.SetContent(renderMarkdown(content))
+	m.viewport.GotoTop()
+	m.state = stateReveal
+	return m, nil
+}
+
 func (m Model) updateRecall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Quit):
@@ -451,9 +533,14 @@ func (m Model) updateAIQuestions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.Height = m.viewportHeightForReveal()
 		m.viewport.SetContent(renderMarkdown(content))
 		m.viewport.GotoTop()
+		m.state = stateReveal
+		// Stored questions are shown without AI too — there is nothing to
+		// evaluate the answer with then, so the note is simply revealed.
+		if !m.aiEnabled {
+			return m, nil
+		}
 		transcript := m.aiQuestions + "\n\nAnswer:\n" + answer
 		m.aiLoading = true
-		m.state = stateReveal
 		return m, fetchAIEval(m.cfg.AI, content, transcript)
 	}
 	var cmd tea.Cmd
@@ -467,6 +554,11 @@ func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmQuit = true
 		return m, nil
 	case key.Matches(msg, keys.Enter):
+		// An evaluation that failed while the note was on screen is reported
+		// now, before grading, so the user is never graded by a silent fallback.
+		if m.heldErr != nil {
+			return m.reportAIFailure(m.heldErr.phase, m.heldErr.err)
+		}
 		m.state = stateGrading
 		return m, nil
 	}
@@ -533,6 +625,7 @@ func (m Model) applyGrade(grade fsrs.Grade) (tea.Model, tea.Cmd) {
 	}
 	m.reviewed = append(m.reviewed, gradeResult{card: updated, grade: grade})
 	m.index++
+	m.heldErr = nil // belongs to the card being left behind
 	if m.index >= len(m.cards) {
 		m.state = stateSessionSummary
 		return m, nil
@@ -553,6 +646,7 @@ func (m Model) applyGrade(grade fsrs.Grade) (tea.Model, tea.Cmd) {
 
 func (m Model) skipCard() (tea.Model, tea.Cmd) {
 	m.index++
+	m.heldErr = nil // belongs to the card being left behind
 	if m.index >= len(m.cards) {
 		m.state = stateSessionSummary
 		return m, nil
@@ -599,6 +693,8 @@ func (m Model) View() string {
 		return m.viewRecall()
 	case stateAIQuestions:
 		return m.viewAIQuestions()
+	case stateAIError:
+		return m.viewAIError()
 	case stateReveal:
 		return m.viewReveal()
 	case stateGrading:
@@ -675,6 +771,52 @@ func (m Model) viewAIQuestions() string {
 	return b.String()
 }
 
+// viewAIError spells out what the AI was asked to do, what it said when it
+// failed, and what each way out costs, so the choice between carrying on
+// without AI and stopping is an informed one.
+func (m Model) viewAIError() string {
+	if m.aiErr == nil {
+		return ""
+	}
+	w := m.width - 4
+	if w < 20 {
+		w = 20
+	}
+
+	var b strings.Builder
+	b.WriteString(warningStyle.Render("⚠ AI error") + "\n\n")
+
+	target := ""
+	if card := m.currentCard(); card != nil {
+		target = fmt.Sprintf(" for %q", card.Title)
+	}
+	binary := m.cfg.AI.Binary
+	if binary == "" {
+		binary = "the AI"
+	}
+	fmt.Fprintf(&b, "  %s failed to %s%s:\n\n", binary, m.aiErr.phase, target)
+	b.WriteString(indent(warningStyle.Render(wordwrap.String(m.aiErr.err.Error(), w)), "    ") + "\n\n")
+
+	if m.aiErr.phase == phaseEvaluate {
+		b.WriteString(indent(wordwrap.String("Continuing turns AI off for the rest of the session: you grade this answer yourself, and the remaining cards fall back to their stored questions, or to plain recall when they have none.", w), "  "))
+	} else {
+		b.WriteString(indent(wordwrap.String("Continuing turns AI off for the rest of the session: cards fall back to their stored questions, or to plain recall when they have none, and you grade yourself.", w), "  "))
+	}
+	b.WriteString("\n\n")
+	b.WriteString(hintStyle.Render("  Cards already graded are saved either way.") + "\n\n")
+	b.WriteString("  [c] Continue without AI  [Esc/q] Stop the session")
+	return b.String()
+}
+
+// indent prefixes every line of s, so wrapped text stays aligned in the block.
+func indent(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m Model) viewReveal() string {
 	card := m.currentCard()
 	if card == nil {
@@ -684,7 +826,11 @@ func (m Model) viewReveal() string {
 	fmt.Fprintf(&b, "%s\n", hintStyle.Render(fmt.Sprintf("[%d/%d] %s", m.index+1, len(m.cards), card.Title)))
 	b.WriteString(m.viewport.View() + "\n")
 	hint := "[Enter] Grade  [↑/↓] Scroll  [Esc] Skip/Quit"
-	if m.aiEnabled && m.aiLoading {
+	switch {
+	case m.heldErr != nil:
+		// Flagged here and detailed on [Enter], so the note stays readable.
+		b.WriteString(warningStyle.Render("⚠ AI evaluation failed") + "\n")
+	case m.aiEnabled && m.aiLoading:
 		hint = "[Enter] Grade  [↑/↓] Scroll  [Esc] Skip/Quit  · AI evaluating in background…"
 	}
 	b.WriteString(hintStyle.Render(hint))

@@ -98,6 +98,28 @@ Grading — AI suggests a grade with rationale
 
 The AI also suggests note improvements below the questions when it finds gaps or ambiguities in the note content.
 
+### When the AI fails
+
+If the AI cannot be reached, exits with an error, or returns nothing, the session stops and shows what happened — the binary it ran, what it was asked to do, and the error text the binary itself printed:
+
+```
+⚠ AI error
+
+  claude failed to generate questions for "Kubernetes probes":
+
+    claude: exit status 1: Error: credit balance is too low to run this request
+
+  Continuing turns AI off for the rest of the session: cards fall back to
+  their stored questions, or to plain recall when they have none, and you
+  grade yourself.
+
+  [c] Continue without AI  [Esc/q] Stop the session
+```
+
+Nothing is decided for you: `c` carries on without AI for the rest of the session, `Esc` (or `q`) ends it. Cards graded before the failure are already saved either way.
+
+A failed evaluation is reported the same way, but only once you press **Enter** to be graded — the note stays on screen until then, with a `⚠ AI evaluation failed` flag. Continuing there drops you into manual grading.
+
 ### Customising prompts
 
 Prompt templates are written to `~/.config/memory/prompts/` on first run. Edit them to change how questions are generated or how answers are evaluated. To restore the defaults:
